@@ -6,6 +6,6 @@
 	"author": "attard",
 	"version": "1.0.0",
 	"dist": {
-		"script": "index.js"
+		"script": "dist/index.js"
 	}
 }

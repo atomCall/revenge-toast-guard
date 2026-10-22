@@ -14,9 +14,13 @@ The built plugin is committed, so the repository works as an install source
 without a build step:
 
 ```
-manifest.json      plugin metadata (Revenge format 1)
-dist/index.js      the bundled plugin
+manifest.json        plugin metadata; dist.script = dist/index.js (repo-relative)
+dist/manifest.json   same metadata with dist.script = index.js (dist-relative)
+dist/index.js        the bundled plugin
 ```
+
+Both manifests are shipped so the repository resolves correctly whether the
+loader reads the manifest from the repository root or from the built folder.
 
 Point Revenge at `https://github.com/atomCall/revenge-toast-guard` (or add it as
 a custom plugin source) and enable **Toast Guard**. Open its settings page to
@@ -140,6 +144,7 @@ src/toastGuard.ts   pure logic (tested)
 src/index.ts        plugin definition, module discovery, patches
 src/settings.tsx    settings UI
 src/config.ts       settings shape + defaults
+scripts/            build helpers (manifest generation)
 test/toastGuard.test.ts  pure logic suite
 test/plugin.test.ts      bundle-level integration suite
 types/              local Revenge runtime declarations (offline typecheck)

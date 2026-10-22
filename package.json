@@ -6,7 +6,7 @@
 	"scripts": {
 		"test": "node --test test/toastGuard.test.ts test/plugin.test.ts",
 		"typecheck": "tsc --noEmit",
-		"build": "bun build src/index.ts --outfile=dist/index.js --target=browser --format=esm --external '@revenge-mod/*' --external 'react' --external 'react-native' && cp manifest.json dist/manifest.json",
+		"build": "bun build src/index.ts --outfile=dist/index.js --target=browser --format=esm --external '@revenge-mod/*' --external 'react' --external 'react-native' && node scripts/build-manifest.mjs",
 		"check": "bun run typecheck && bun run build && bun run test"
 	},
 	"devDependencies": {

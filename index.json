@@ -13,8 +13,8 @@
 			"versions": {
 				"1.1.0": {
 					"url": "https://raw.githubusercontent.com/atomCall/revenge-toast-guard/main/pool/attard.toast-guard@1.1.0.zip",
-					"sha256": "20b66e76427c7d9af3bbde2064d9571aca1b85e94c4a53bb7785bc672e628b01",
-					"size": 4368,
+					"sha256": "e8423e0955b8dcdd15889160313c320ae7a247003fe50aeaa669ee964caafc26",
+					"size": 4386,
 					"dependencies": {
 						"revenge.api": {
 							"version": ">=1 <2"

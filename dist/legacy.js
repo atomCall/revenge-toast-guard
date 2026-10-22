@@ -390,9 +390,13 @@ function ToastGuard() {
     if (typeof module2.useToastContainer !== "function")
       return false;
     hookPatched = true;
-    inspect(`hook module exports: ${describeModule(module2)}`);
-    for (const key of findComponentExports(module2, COMPONENT_NAME))
-      patchComponent(module2, key);
+    try {
+      inspect(`hook module exports: ${describeModule(module2)}`);
+      for (const key of findComponentExports(module2, COMPONENT_NAME))
+        patchComponent(module2, key);
+    } catch (error) {
+      diagnose("could not inspect the toast module", error);
+    }
     unpatch.push(api.patcher.instead("useToastContainer", module2, function(args, original) {
       if (!settings().sanitizeContainer)
         return Reflect.apply(original, this, args);

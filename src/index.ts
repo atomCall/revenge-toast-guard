@@ -92,8 +92,14 @@ export default plugin<{ jsonStorage: Settings }>({
 
 			hookPatched = true
 
-			inspect(`hook module exports: ${describeModule(module)}`)
-			for (const key of findComponentExports(module, COMPONENT_NAME)) patchComponent(module, key)
+			// Best effort: a module with a throwing getter must not stop the hook
+			// itself from being patched.
+			try {
+				inspect(`hook module exports: ${describeModule(module)}`)
+				for (const key of findComponentExports(module, COMPONENT_NAME)) patchComponent(module, key)
+			} catch (error) {
+				diagnose('could not inspect the toast module', error)
+			}
 
 			cleanup(
 				instead(module, 'useToastContainer', function (this: unknown, args: any[], orig: AnyFunction) {

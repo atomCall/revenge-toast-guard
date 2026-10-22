@@ -368,9 +368,13 @@ var src_default = plugin({
       if (typeof module.useToastContainer !== "function")
         return false;
       hookPatched = true;
-      inspect(`hook module exports: ${describeModule(module)}`);
-      for (const key of findComponentExports(module, COMPONENT_NAME))
-        patchComponent(module, key);
+      try {
+        inspect(`hook module exports: ${describeModule(module)}`);
+        for (const key of findComponentExports(module, COMPONENT_NAME))
+          patchComponent(module, key);
+      } catch (error) {
+        diagnose("could not inspect the toast module", error);
+      }
       cleanup(instead(module, "useToastContainer", function(args, orig) {
         if (!settings().sanitizeContainer)
           return Reflect.apply(orig, this, args);

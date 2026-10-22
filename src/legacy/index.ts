@@ -116,9 +116,15 @@ export default function ToastGuard(): LegacyPlugin {
 		hookPatched = true
 
 		// Sibling exports name the rest of the toast subsystem, and the component
-		// that crashes is the one Hermes calls `ToastContainer`.
-		inspect(`hook module exports: ${describeModule(module)}`)
-		for (const key of findComponentExports(module, COMPONENT_NAME)) patchComponent(module, key)
+		// that crashes is the one Hermes calls `ToastContainer`. A module with a
+		// throwing getter must not stop the hook from being patched, so this is
+		// best effort only.
+		try {
+			inspect(`hook module exports: ${describeModule(module)}`)
+			for (const key of findComponentExports(module, COMPONENT_NAME)) patchComponent(module, key)
+		} catch (error) {
+			diagnose('could not inspect the toast module', error)
+		}
 
 		unpatch.push(
 			api.patcher.instead(

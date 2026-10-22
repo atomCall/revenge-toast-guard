@@ -70,21 +70,36 @@ bun run check     # typecheck + build + tests
 
 ## Why it crashes
 
-Discord's own `useToastContainer` reads `position` off every entry of its toast
-list. If the list ever contains an entry that is `undefined` (a dismiss/remove
-racing a render, or a queued toast that was never given a `position`), that read
-throws and takes down the whole screen that renders the container.
+Every generation of the crash ends in the same unguarded read of `position`:
+
+**Older builds.** `useToastContainer` returns `{toasts, handlers}` and reads
+`position` off every entry of the list. If the list ever contains an entry that
+is `undefined` (a dismiss/remove racing a render, or a queued toast that was
+never given a `position`), that read throws and takes down the whole screen that
+renders the container.
+
+**Current builds.** The hook returns `{entry, position}` and selects its entry
+out of Discord's zustand store — `state.currentToastMap.get(key)`, a
+`{toast, key}` object — then reads `entry.toast.position` without checking
+`entry.toast`. `showToast()` stores the payload it was given, so a call that
+arrived with no payload stores `{toast: undefined, key}`: the entry is present,
+`entry.toast` is not, and the read throws with exactly the same message.
 
 Toast Guard fixes the data **and** the read:
 
 | Layer | What it does | Where |
 | --- | --- | --- |
-| 1. Source | Fills a missing `position` on toast payloads before Discord enqueues them (`showToast` & friends) | `ensurePosition()` |
-| 2. Hook | Wraps `useToastContainer` and repairs its result: unusable entries become a renderable placeholder in place, missing positions are filled, handlers are completed | `guardToastState()` |
+| 1. Dispatcher | Fills a missing `position` on toast payloads before Discord enqueues them (`showToast` & friends), and drops a call that carries no payload at all | `ensurePosition()` |
+| 2. Store | Wraps `useToastStore` and reports an entry that holds no toast as `null` — the "no toast" value the hook already guards for — instead of letting `entry.toast.position` run | `repairToastEntry()` |
+| 3. Hook | Wraps `useToastContainer` and repairs its result: unusable entries become a renderable placeholder in place, missing positions are filled, handlers are completed | `guardToastState()` |
+
+The default position is never guessed: it is `DEFAULT_TOAST_POSITION`, read off
+the same module that exports the hook (`top` in current builds), so a completed
+payload lands where Discord would have put it.
 
 Nothing is hardcoded to a module ID: the modules are discovered by their
-exported props (`useToastContainer`, `showToast`, ...), so the plugin survives
-Discord updates that renumber modules.
+exported props (`useToastContainer`, `useToastStore`, `showToast`, ...), so the
+plugin survives Discord updates that renumber modules.
 
 ## Behaviour details
 
@@ -99,6 +114,15 @@ Discord updates that renumber modules.
   mutated.
 - Duplicate ids are logged but kept, for the same reason: removing one would
   change the length of the list.
+- A store entry that holds no toast is reported as `null`, never as a fabricated
+  toast: `null` is the value the hook already treats as "nothing to show", while
+  an invented entry would render an empty bubble (and could crash on the next
+  missing field).
+- The store is patched as a function *and* as an object: Discord also calls
+  `useToastStore.getState()` directly, so the patch copies the store's own
+  methods back onto the wrapper.
+- A dispatcher call with no payload is dropped instead of forwarded: forwarding
+  it stores the very `{toast: undefined}` entry this plugin exists to remove.
 - `handlers.updateHeight` / `startPause` / `endPause` / `calculateOffset` always
   exist, so a partially initialised container cannot throw either.
 - A throwing `useToastContainer` is *not* swallowed. Swallowing it leaves React's
@@ -111,8 +135,8 @@ Discord updates that renumber modules.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| Guard the toast container | on | Layer 2 |
-| Fix toasts at the source | on | Layer 1 |
+| Guard the toast container | on | Layers 2 and 3 (store entry + hook result) |
+| Fix toasts at the source | on | Layer 1 (payload before it is enqueued) |
 | Log repaired toasts | on | Writes to the React Native log (capped at 20 lines) |
 
 ## Reading the log
@@ -121,17 +145,19 @@ The container of a given Discord build is Hermes bytecode, so the plugin asks it
 what it returns instead of assuming the shape. With **Log repaired toasts** on:
 
 ```
-[ToastGuard] active (hook: true, dispatchers: 3)
-[ToastGuard] hook module exports: {default:fn:ToastContainer,useToastContainer:fn,ToastStore:{}}
-[ToastGuard] hook result #1 (render 1): {toasts:undefined,handlers:{…}}
-[ToastGuard] instrumented default as ToastContainer
-[ToastGuard] hook result #2 (render 7): {toasts:array(1)[{id:"a",position:"top",…}],handlers:{…}}
+[ToastGuard] active (hook: true, store: true, dispatchers: 3)
+[ToastGuard] hook module exports: {DEFAULT_TOAST_POSITION:"top",DEFAULT_TOAST_DURATION_MS:3000,useToastContainer:fn:useToastContainer}
+[ToastGuard] hook result #1 (render 1): {entry:null,position:"top"}
+[ToastGuard] dropped a toast entry with no payload: {toast:undefined,key:7}
 ```
 
 - `hook result #n` is printed once per **distinct shape**, never once per render,
   and describes what Discord handed over *before* the repair. `undefined` and
   `<hole>` entries, which are exactly what the container chokes on, are spelled
   out.
+- `dropped a toast entry with no payload` means layer 2 found the entry Discord
+  had stored for a payload-less `showToast()` and reported it as no toast —
+  printed once, with the entry it saw.
 - `instrumented … as ToastContainer` means the component that renders the
   container is wrapped too, so a crash can be attributed to the state it had:
   `[ToastGuard] ToastContainer threw on render N with props {…}; last hook result: …`
@@ -172,13 +198,18 @@ adb logcat -s ReactNativeJS | grep ToastGuard
 On start you should see:
 
 ```
-[ToastGuard] active (hook: true, dispatchers: 2)
+[ToastGuard] active (hook: true, store: true, dispatchers: 2)
 ```
 
 - `hook: false` → the toast container was not found in this build; the plugin
   did nothing. Please open an issue with your Discord version.
 - `filled a missing toast position` → layer 1 caught the root cause.
-- `repaired toast (missing-position) at 0` / `(not-an-object) at 1` → layer 2
+- `dropped a showToast call with no toast payload` → layer 1 stopped a payload
+  that would have been stored as `{toast: undefined}`.
+- `dropped a toast entry with no payload` → layer 2 healed an entry that was
+  already in Discord's store (often a call that happened before the plugin
+  loaded).
+- `repaired toast (missing-position) at 0` / `(not-an-object) at 1` → layer 3
   replaced a malformed entry that would have crashed the container.
 - `repaired toast (duplicate-id) at 2` → a stale entry survived a removal; it is
   left in place (removing it would change the length of the list).
@@ -189,25 +220,25 @@ On start you should see:
 bun run check     # typecheck + build + tests
 ```
 
-Two layers, all runnable without Discord:
+No Discord required:
 
 - `test/toastGuard.test.ts` covers the pure logic with Node's built-in runner:
-  entry repair, list length/order preservation, position inference, handler
-  repair, state repair, payload completion, and that hook errors are not
-  swallowed.
-- `test/plugin.test.ts` (9 tests) loads the real Revenge Next bundle against
-  stubbed runtime modules, so it also validates the `plugin()` definition, module
-  discovery by props, the `instead`/`before` hook contract, the settings
-  switches, and unpatching on stop.
+  store-entry repair, entry repair, list length/order preservation, position
+  inference, handler repair, state repair, payload completion, and that hook
+  errors are not swallowed.
+- `test/plugin.test.ts` loads the real Revenge Next bundle against stubbed
+  runtime modules, so it also validates the `plugin()` definition, module
+  discovery by props, the `instead` hook contract, the settings switches, and
+  unpatching on stop.
 - `test/legacy.test.ts` replays `evalPlugin` from Revenge legacy
   (`vendetta => { return <bundle> }`) against a stubbed Vendetta API: the plugin
-  object shape, the guarded hook, dispatcher payload completion, unpatching on
-  `onUnload`, and the settings switches.
-- `test/package.test.ts` (5 tests) checks the published artifacts: `index.json`
-  against the zip's real `sha256`/size, the zip contents, the legacy manifest
-  against `dist/legacy.js`, and that the legacy bundle is one expression (a
-  leading comment would make the loader's `return` hit ASI and hand back
-  `undefined`).
+  object shape, the guarded hook, the guarded store (including that
+  `useToastStore.getState()` survives the patch), dispatcher payload completion
+  and dropping, unpatching on `onUnload`, and the settings switches.
+- `test/package.test.ts` checks the published artifacts: `index.json` against the
+  zip's real `sha256`/size, the zip contents, the legacy manifest against
+  `dist/legacy.js`, and that the legacy bundle is one expression (a leading
+  comment would make the loader's `return` hit ASI and hand back `undefined`).
 
 ```bash
 node --test test/toastGuard.test.ts test/plugin.test.ts test/legacy.test.ts test/package.test.ts

@@ -7,7 +7,7 @@
 		}
 	],
 	"main": "dist/legacy.js",
-	"hash": "1507ef6440a34902224b60bdfd69525a226643ab4863dadb4b01e0138d0b9c21",
+	"hash": "d40aef620638f4e83c864d0a44fa6e297f3bb07920534d78eaadbbe2857e6e13",
 	"vendetta": {
 		"icon": "ShieldIcon"
 	}

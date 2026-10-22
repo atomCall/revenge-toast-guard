@@ -8,6 +8,7 @@ import {
 	inferDefaultPosition,
 	normalizeHandlers,
 	repairToast,
+	repairToastEntry,
 	repairToastState,
 	repairToasts,
 } from '../src/toastGuard.ts'
@@ -210,6 +211,36 @@ test('repairToastState leaves an unexpected shape alone', () => {
 	assert.equal(repairToastState(tuple), tuple)
 })
 
+test('repairToastState leaves a hook result that is not a container state alone', () => {
+	// Some builds return `{entry, position}` instead of `{toasts, handlers}`;
+	// adding the container fields there would change the object on every render.
+	const state = { entry: null, position: 'top' }
+
+	assert.equal(repairToastState(state), state)
+})
+
+test('repairToastEntry keeps a store entry that has a toast', () => {
+	const entry = { key: 7, toast: { text: 'hi', position: 'top' } }
+
+	assert.equal(repairToastEntry(entry), entry)
+})
+
+test('repairToastEntry reports an entry without a toast as no toast', () => {
+	// `showToast()` with no payload stores `{toast: undefined, key}`, and the
+	// container reads `entry.toast.position` without checking `entry.toast`.
+	for (const toast of [undefined, null]) {
+		assert.equal(repairToastEntry({ key: 7, toast }), null)
+	}
+	// The same entry with the toast simply missing reads the same way
+	assert.equal(repairToastEntry({ key: 7 }), null)
+})
+
+test('repairToastEntry leaves values that are not store entries alone', () => {
+	for (const value of [undefined, null, 0, 'nope', [], { foo: 'bar' }]) {
+		assert.equal(repairToastEntry(value), value)
+	}
+})
+
 test('guardToastState returns the repaired state of a healthy hook', () => {
 	const state = guardToastState(() => ({ toasts: [{ id: 'a' }] }))
 
@@ -255,6 +286,14 @@ test('ensurePosition leaves an existing position untouched', () => {
 
 test('ensurePosition treats an empty position as missing', () => {
 	const payload: Record<string, unknown> = { content: 'hello', position: '' }
+
+	assert.equal(ensurePosition(payload, 'top'), true)
+	assert.equal(payload.position, 'top')
+})
+
+test('ensurePosition recognises a text-only toast payload', () => {
+	// Discord's newer toasts carry `text` where older builds carried `content`
+	const payload: Record<string, unknown> = { text: 'hello' }
 
 	assert.equal(ensurePosition(payload, 'top'), true)
 	assert.equal(payload.position, 'top')

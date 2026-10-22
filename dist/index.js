@@ -1,7 +1,7 @@
 // src/index.ts
 import { getModules } from "@revenge-mod/modules/finders";
 import { withProps } from "@revenge-mod/modules/finders/filters";
-import { before, instead } from "@revenge-mod/patcher";
+import { instead } from "@revenge-mod/patcher";
 
 // src/config.ts
 var DEFAULT_SETTINGS = {
@@ -174,7 +174,7 @@ var isFunction = (value) => typeof value === "function";
 var isObject = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 var hasUsableId = (entry) => typeof entry.id === "string" && entry.id.length > 0 || typeof entry.id === "number" && Number.isFinite(entry.id);
 var hasUsablePosition = (value) => value != null && value !== "";
-var PAYLOAD_KEYS = ["content", "message", "title", "type", "position"];
+var PAYLOAD_KEYS = ["content", "message", "title", "text", "variant", "type", "position"];
 var isToastPayload = (value) => isObject(value) && PAYLOAD_KEYS.some((key) => (key in value));
 function ensurePosition(target, defaultPosition = DEFAULT_POSITION) {
   if (!isToastPayload(target))
@@ -290,11 +290,22 @@ function createSafeHandlers() {
 function createSafeToastState() {
   return { toasts: [], handlers: createSafeHandlers() };
 }
+var ENTRY_KEYS = ["toast", "key"];
+var hasEntryShape = (value) => ENTRY_KEYS.some((key) => Object.prototype.hasOwnProperty.call(value, key));
+function repairToastEntry(slice) {
+  if (!isObject(slice))
+    return slice;
+  if (!hasEntryShape(slice))
+    return slice;
+  return slice.toast == null ? null : slice;
+}
 function repairToastState(state, options = {}) {
   if (Array.isArray(state))
     return state;
   if (!isObject(state))
     return createSafeToastState();
+  if (!("toasts" in state) && !("handlers" in state))
+    return state;
   const toasts = repairToasts(state.toasts, options);
   const handlers = normalizeHandlers(state.handlers);
   if (toasts === state.toasts && handlers === state.handlers)
@@ -310,6 +321,7 @@ var MAX_DIAGNOSTICS = 20;
 var MAX_INSPECTION = 12;
 var COMPONENT_NAME = "ToastContainer";
 var HOOK_KEYS = ["useToastContainer"];
+var STORE_KEYS = ["useToastStore"];
 var DISPATCH_KEYS = ["showToast", "addToast", "pushToast", "enqueueToast", "createToast"];
 var src_default = plugin({
   jsonStorage: {
@@ -323,6 +335,12 @@ var src_default = plugin({
     let renders = 0;
     let dispatchersPatched = 0;
     let hookPatched = false;
+    let storePatched = false;
+    let reportedEmptyToast = false;
+    let toastDefaultPosition;
+    const patchedDispatchers = new WeakMap;
+    const patchedStores = new WeakSet;
+    const defaultPosition = () => toastDefaultPosition ?? DEFAULT_POSITION;
     function diagnose(label, detail) {
       if (!settings().logDiagnostics || diagnostics >= MAX_DIAGNOSTICS)
         return;
@@ -370,6 +388,9 @@ var src_default = plugin({
       hookPatched = true;
       try {
         inspect(`hook module exports: ${describeModule(module)}`);
+        const candidate = module.DEFAULT_TOAST_POSITION;
+        if (typeof candidate === "string" && candidate.length > 0)
+          toastDefaultPosition = candidate;
         for (const key of findComponentExports(module, COMPONENT_NAME))
           patchComponent(module, key);
       } catch (error) {
@@ -397,20 +418,67 @@ var src_default = plugin({
     function patchDispatcher(module, key) {
       if (typeof module[key] !== "function")
         return;
+      const keys = patchedDispatchers.get(module) ?? new Set;
+      if (keys.has(key))
+        return;
+      keys.add(key);
+      patchedDispatchers.set(module, keys);
       dispatchersPatched++;
-      cleanup(before(module, key, ([payload, options]) => {
+      cleanup(instead(module, key, function(args, orig) {
         if (!settings().sanitizeDispatcher)
+          return Reflect.apply(orig, this, args);
+        if (args?.[0] == null) {
+          diagnose(`dropped a ${key} call with no toast payload`, { args: args?.length ?? 0 });
           return;
+        }
         try {
-          for (const candidate of [payload, options]) {
-            if (ensurePosition(candidate)) {
+          for (const candidate of [args?.[0], args?.[1]]) {
+            if (ensurePosition(candidate, defaultPosition())) {
               diagnose("filled a missing toast position", candidate);
             }
           }
         } catch (error) {
           diagnose(`could not complete the ${key} payload`, error);
         }
+        return Reflect.apply(orig, this, args);
       }));
+    }
+    function patchStore(module) {
+      if (typeof module.useToastStore !== "function")
+        return;
+      if (patchedStores.has(module))
+        return;
+      patchedStores.add(module);
+      const store = module.useToastStore;
+      storePatched = true;
+      cleanup(instead(module, "useToastStore", function(args, orig) {
+        const entry = Reflect.apply(orig, this, args);
+        if (!settings().sanitizeContainer)
+          return entry;
+        try {
+          const repaired = repairToastEntry(entry);
+          if (repaired !== entry && !reportedEmptyToast) {
+            reportedEmptyToast = true;
+            diagnose(`dropped a toast entry with no payload: ${describeValue(entry)}`, entry);
+          }
+          return repaired;
+        } catch (error) {
+          diagnose("could not repair the toast store entry", error);
+          return entry;
+        }
+      }));
+      inheritHelpers(module.useToastStore, store);
+    }
+    function inheritHelpers(target, source) {
+      for (const key of Object.getOwnPropertyNames(source)) {
+        if (key === "length" || key === "name" || key === "prototype")
+          continue;
+        try {
+          target[key] = source[key];
+        } catch (error) {
+          diagnose(`could not keep ${key} reachable on the toast store`, error);
+        }
+      }
     }
     cleanup(getModules(withProps(...HOOK_KEYS), (module) => {
       if (hookPatched)
@@ -421,6 +489,15 @@ var src_default = plugin({
         diagnose("could not patch useToastContainer", error);
       }
     }));
+    for (const key of STORE_KEYS) {
+      cleanup(getModules(withProps(key), (module) => {
+        try {
+          patchStore(module);
+        } catch (error) {
+          diagnose(`could not patch ${key}`, error);
+        }
+      }));
+    }
     for (const key of DISPATCH_KEYS) {
       cleanup(getModules(withProps(key), (module) => {
         try {
@@ -431,7 +508,7 @@ var src_default = plugin({
       }));
     }
     if (settings().logDiagnostics) {
-      console.log(`[ToastGuard] active (hook: ${hookPatched}, dispatchers: ${dispatchersPatched})`);
+      console.log(`[ToastGuard] active (hook: ${hookPatched}, store: ${storePatched}, dispatchers: ${dispatchersPatched})`);
     }
     if (!hookPatched) {
       console.warn("[ToastGuard] could not find the toast container in this Discord build; nothing was patched");

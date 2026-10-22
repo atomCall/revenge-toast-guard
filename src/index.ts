@@ -1,10 +1,16 @@
 import { getModules } from '@revenge-mod/modules/finders'
 import { withProps } from '@revenge-mod/modules/finders/filters'
-import { before, instead } from '@revenge-mod/patcher'
+import { instead } from '@revenge-mod/patcher'
 import { DEFAULT_SETTINGS, type Settings } from './config'
 import { createInspector, describeModule, describeValue, findComponentExports } from './diagnostics'
 import SettingsComponent from './settings'
-import { ensurePosition, guardToastState } from './toastGuard'
+import {
+	DEFAULT_POSITION,
+	ensurePosition,
+	guardToastState,
+	repairToastEntry,
+	type ToastPosition,
+} from './toastGuard'
 
 type AnyRecord = Record<string, any>
 type AnyFunction = (...args: any[]) => any
@@ -15,6 +21,7 @@ const MAX_INSPECTION = 12
 const COMPONENT_NAME = 'ToastContainer'
 
 const HOOK_KEYS = ['useToastContainer'] as const
+const STORE_KEYS = ['useToastStore'] as const
 const DISPATCH_KEYS = ['showToast', 'addToast', 'pushToast', 'enqueueToast', 'createToast'] as const
 
 export default plugin<{ jsonStorage: Settings }>({
@@ -32,6 +39,16 @@ export default plugin<{ jsonStorage: Settings }>({
 		let renders = 0
 		let dispatchersPatched = 0
 		let hookPatched = false
+		let storePatched = false
+		let reportedEmptyToast = false
+
+		/** The container's own default, used to complete payloads. */
+		let toastDefaultPosition: ToastPosition | undefined
+
+		const patchedDispatchers = new WeakMap<AnyRecord, Set<string>>()
+		const patchedStores = new WeakSet<AnyRecord>()
+
+		const defaultPosition = (): ToastPosition => toastDefaultPosition ?? DEFAULT_POSITION
 
 		function diagnose(label: string, detail: unknown): void {
 			if (!settings().logDiagnostics || diagnostics >= MAX_DIAGNOSTICS) return
@@ -96,6 +113,12 @@ export default plugin<{ jsonStorage: Settings }>({
 			// itself from being patched.
 			try {
 				inspect(`hook module exports: ${describeModule(module)}`)
+
+				// `DEFAULT_TOAST_POSITION` is what the container itself falls
+				// back to, so it is the only correct value to complete with.
+				const candidate = module.DEFAULT_TOAST_POSITION
+				if (typeof candidate === 'string' && candidate.length > 0) toastDefaultPosition = candidate
+
 				for (const key of findComponentExports(module, COMPONENT_NAME)) patchComponent(module, key)
 			} catch (error) {
 				diagnose('could not inspect the toast module', error)
@@ -134,14 +157,28 @@ export default plugin<{ jsonStorage: Settings }>({
 		function patchDispatcher(module: AnyRecord, key: string): void {
 			if (typeof module[key] !== 'function') return
 
+			const keys = patchedDispatchers.get(module) ?? new Set<string>()
+			if (keys.has(key)) return
+			keys.add(key)
+			patchedDispatchers.set(module, keys)
+
 			dispatchersPatched++
 			cleanup(
-				before(module, key, ([payload, options]: any[]) => {
-					if (!settings().sanitizeDispatcher) return
+				instead(module, key, function (this: unknown, args: any[], orig: AnyFunction) {
+					if (!settings().sanitizeDispatcher) return Reflect.apply(orig, this, args)
+
+					// A dispatcher called without a payload still stores an entry
+					// (`{toast: undefined, key}` in `currentToastMap`) that the
+					// container cannot render, so the call is dropped rather
+					// than forwarded.
+					if (args?.[0] == null) {
+						diagnose(`dropped a ${key} call with no toast payload`, { args: args?.length ?? 0 })
+						return undefined
+					}
 
 					try {
-						for (const candidate of [payload, options]) {
-							if (ensurePosition(candidate)) {
+						for (const candidate of [args?.[0], args?.[1]]) {
+							if (ensurePosition(candidate, defaultPosition())) {
 								diagnose('filled a missing toast position', candidate)
 							}
 						}
@@ -149,8 +186,69 @@ export default plugin<{ jsonStorage: Settings }>({
 						// Never make toast creation worse than it already is
 						diagnose(`could not complete the ${key} payload`, error)
 					}
+
+					return Reflect.apply(orig, this, args)
 				}),
 			)
+		}
+
+		/**
+		 * Guards the store the container reads.
+		 *
+		 * The hook selects `state.currentToastMap.get(key)` and then reads
+		 * `entry.toast.position` unguarded, so an entry stored without a payload
+		 * crashes it. Repairing the slice on its way out of the store also heals
+		 * entries that were queued before this plugin loaded.
+		 */
+		function patchStore(module: AnyRecord): void {
+			if (typeof module.useToastStore !== 'function') return
+			if (patchedStores.has(module)) return
+			patchedStores.add(module)
+
+			const store = module.useToastStore as AnyFunction
+			storePatched = true
+
+			cleanup(
+				instead(module, 'useToastStore', function (this: unknown, args: any[], orig: AnyFunction) {
+					// The hook has to run no matter what: React tracks hooks by
+					// call order, so skipping the call would desync the list.
+					const entry = Reflect.apply(orig, this, args)
+					if (!settings().sanitizeContainer) return entry
+
+					try {
+						const repaired = repairToastEntry(entry)
+						if (repaired !== entry && !reportedEmptyToast) {
+							reportedEmptyToast = true
+							diagnose(`dropped a toast entry with no payload: ${describeValue(entry)}`, entry)
+						}
+						return repaired
+					} catch (error) {
+						diagnose('could not repair the toast store entry', error)
+						return entry
+					}
+				}),
+			)
+
+			// `instead` swaps the function object, but Discord also uses the
+			// store directly (`useToastStore.getState()`), so its statics have
+			// to survive.
+			inheritHelpers(module.useToastStore as AnyFunction, store)
+		}
+
+		/**
+		 * Copies a function's own helpers (`getState`, `setState`, `subscribe`)
+		 * onto the wrapper that replaced it. Losing them would break every
+		 * caller that uses the store as an object.
+		 */
+		function inheritHelpers(target: AnyFunction, source: AnyFunction): void {
+			for (const key of Object.getOwnPropertyNames(source)) {
+				if (key === 'length' || key === 'name' || key === 'prototype') continue
+				try {
+					;(target as any)[key] = (source as any)[key]
+				} catch (error) {
+					diagnose(`could not keep ${key} reachable on the toast store`, error)
+				}
+			}
 		}
 
 		cleanup(
@@ -163,6 +261,18 @@ export default plugin<{ jsonStorage: Settings }>({
 				}
 			}),
 		)
+
+		for (const key of STORE_KEYS) {
+			cleanup(
+				getModules(withProps(key), (module: AnyRecord) => {
+					try {
+						patchStore(module)
+					} catch (error) {
+						diagnose(`could not patch ${key}`, error)
+					}
+				}),
+			)
+		}
 
 		for (const key of DISPATCH_KEYS) {
 			cleanup(
@@ -178,7 +288,7 @@ export default plugin<{ jsonStorage: Settings }>({
 
 		if (settings().logDiagnostics) {
 			console.log(
-				`[ToastGuard] active (hook: ${hookPatched}, dispatchers: ${dispatchersPatched})`,
+				`[ToastGuard] active (hook: ${hookPatched}, store: ${storePatched}, dispatchers: ${dispatchersPatched})`,
 			)
 		}
 

@@ -38,8 +38,20 @@ function createRuntime(options: { component?: AnyFunction } = {}) {
 
 	const toastModule: AnyRecord = {
 		useToastContainer: () => current,
+		// This build's own default; the plugin must prefer it over its fallback
+		DEFAULT_TOAST_POSITION: 'top',
 	}
 	if (options.component) toastModule.default = options.component
+
+	// `useToastStore` is a zustand-style hook that is also used as the store
+	// object itself (`useToastStore.getState()`), so the patch has to keep the
+	// statics reachable.
+	let storeState: AnyRecord = { key: 'app', toast: { text: 'hi', position: 'top' } }
+	const storeModule: AnyRecord = {
+		useToastStore: Object.assign((selector: AnyFunction) => selector(storeState), {
+			getState: () => storeState,
+		}),
+	}
 
 	const dispatcher: AnyRecord = {
 		showToast(payload: AnyRecord) {
@@ -48,7 +60,7 @@ function createRuntime(options: { component?: AnyFunction } = {}) {
 		},
 	}
 
-	const modules = [toastModule, dispatcher]
+	const modules = [toastModule, storeModule, dispatcher]
 
 	/** Mirrors spitroast: `instead(key, parent, (args, original))`. */
 	const patcher = {
@@ -96,11 +108,15 @@ function createRuntime(options: { component?: AnyFunction } = {}) {
 		api,
 		toastModule,
 		toastState,
+		storeModule,
 		dispatcher,
 		delivered,
 		storage,
 		setToastState(next: AnyRecord) {
 			current = next
+		},
+		setStoreState(next: AnyRecord) {
+			storeState = next
 		},
 	}
 }
@@ -171,17 +187,67 @@ test('a toast without a position gets one before Discord enqueues it', () => {
 	dispatcher.showToast({ content: 'hello' })
 
 	assert.equal(delivered.length, 1)
-	assert.equal(delivered[0].position, 'bottom')
+	// The container's own default wins over the plugin's fallback
+	assert.equal(delivered[0].position, 'top')
+})
+
+test('a dispatcher call with no toast payload never reaches Discord', () => {
+	const { dispatcher, delivered } = start()
+
+	dispatcher.showToast(undefined)
+	dispatcher.showToast()
+
+	// Forwarding it would store `{toast: undefined}` and crash the container
+	assert.equal(delivered.length, 0)
+})
+
+test('a store entry without a toast is reported as no toast', () => {
+	const { storeModule, setStoreState } = start()
+
+	// The container selects the whole `{toast, key}` entry, not the toast
+	setStoreState({ key: 'app', toast: undefined })
+	assert.equal(storeModule.useToastStore((state: AnyRecord) => state), null)
+
+	const healthy = { key: 'app', toast: { text: 'hi', position: 'top' } }
+	setStoreState(healthy)
+	assert.equal(storeModule.useToastStore((state: AnyRecord) => state), healthy)
+})
+
+test('the patched toast store keeps its own helpers reachable', () => {
+	const { storeModule } = start()
+
+	// Discord calls `useToastStore.getState()` directly, so the patch cannot
+	// simply replace the function object with a bare wrapper
+	assert.equal(typeof storeModule.useToastStore.getState, 'function')
+	assert.equal(storeModule.useToastStore.getState().key, 'app')
+})
+
+test('a sliced selector is left alone', () => {
+	const { storeModule } = start()
+
+	// Only entries shaped like `{toast, key}` are store entries; selectors that
+	// return a map or a boolean must not be rewritten to null
+	const map = new Map()
+	assert.equal(storeModule.useToastStore(() => map), map)
+	assert.equal(storeModule.useToastStore(() => true), true)
+	assert.equal(storeModule.useToastStore(() => 0), 0)
 })
 
 test('onUnload restores the original modules', () => {
-	const { toastModule, toastState, dispatcher, delivered, plugin } = start()
+	const { toastModule, toastState, storeModule, dispatcher, delivered, plugin } = start()
+	const useToastStore = storeModule.useToastStore
 	plugin.onUnload()
 
 	const state = toastModule.useToastContainer()
 	assert.equal(state, toastState)
 	assert.equal(state.toasts.length, 3)
 	assert.equal('position' in state.toasts[2], false)
+
+	// The store is handed back untouched too
+	assert.notEqual(storeModule.useToastStore, useToastStore)
+	const entry = { key: 'app', toast: undefined }
+	assert.equal(storeModule.useToastStore(() => entry), entry)
+	assert.equal(typeof storeModule.useToastStore.getState, 'function')
 
 	const payload: AnyRecord = { content: 'hello' }
 	dispatcher.showToast(payload)

@@ -207,6 +207,45 @@ test('a throwing hook is not swallowed by the guard', async () => {
 	assert.throws(() => module.useToastContainer(), TypeError)
 })
 
+test('a dispatcher call with no payload is dropped', async () => {
+	let calls = 0
+	const module = {
+		showToast: (payload: any) => {
+			calls++
+			return payload
+		},
+	}
+	await startPlugin([module])
+
+	// Forwarding it would store `{toast: undefined}` and crash the container
+	assert.equal(module.showToast(undefined), undefined)
+	assert.equal((module.showToast as (...args: unknown[]) => unknown)(), undefined)
+	assert.equal(calls, 0)
+
+	assert.equal(module.showToast({ content: 'hi' }).position, 'bottom')
+	assert.equal(calls, 1)
+})
+
+test('a store entry without a toast is reported as no toast', async () => {
+	const module = {
+		useToastStore: (_selector: (state: unknown) => unknown) => ({ key: 1, toast: undefined }),
+	}
+	await startPlugin([module])
+
+	assert.equal(module.useToastStore(() => 0), null)
+})
+
+test('the patched toast store keeps getState reachable', async () => {
+	const store = Object.assign(() => ({ key: 1, toast: undefined }), {
+		getState: () => ({ key: 'app' }),
+	})
+	const module = { useToastStore: store }
+	await startPlugin([module])
+
+	// Discord calls `useToastStore.getState()` directly
+	assert.equal(module.useToastStore.getState().key, 'app')
+})
+
 test('stopping the plugin unpatches everything', async () => {
 	const original = () => ({ toasts: [{ id: 'a', position: 'top' }], handlers: handlers() })
 	const module = { useToastContainer: original }

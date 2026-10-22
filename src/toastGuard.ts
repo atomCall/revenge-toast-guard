@@ -1,12 +1,18 @@
 /**
  * Framework-free core of Toast Guard.
  *
- * Discord's `useToastContainer` reads `position` off entries of the toast list.
- * When the list contains a stale/undefined entry, that read throws
- * `TypeError: Cannot read property 'position' of undefined` and takes the whole
- * toast container (and the screen rendering it) down.
+ * Discord has shipped two generations of this crash, and both end in the same
+ * unguarded `position` read:
  *
- * Repairing the list has one hard rule:
+ * 1. Older builds: `useToastContainer` returns `{toasts, handlers}` and reads
+ *    `position` off every entry of the list. A stale or `undefined` entry throws
+ *    `TypeError: Cannot read property 'position' of undefined`.
+ * 2. Newer builds: the store keeps `currentToastMap: Map<key, {toast, key}>`,
+ *    the hook selects one entry and reads `entry.toast.position` without
+ *    checking `entry.toast`. A `showToast()` that arrived without a payload
+ *    stores `{toast: undefined, key}`, and that read is the same error.
+ *
+ * Repairing a list has one hard rule:
  *
  *   the repaired list must have the same length and the same order as the input.
  *
@@ -18,6 +24,9 @@
  * `areHookInputsEqual`. So entries are never dropped, deduplicated or
  * reordered: unrenderable entries are replaced *in place* by an inert
  * placeholder, and a missing `position` is filled on a copy of that entry.
+ *
+ * A store entry that holds no toast is different: it is reported as `null`,
+ * which is the "no toast" value the newer hook already guards for.
  *
  * The same rule is why `guardToastState` never catches errors coming out of the
  * hook itself: a hook that throws halfway leaves React's hook list short for
@@ -68,7 +77,7 @@ const hasUsableId = (entry: Record<string, unknown>) =>
 
 const hasUsablePosition = (value: unknown) => value != null && value !== ''
 
-const PAYLOAD_KEYS = ['content', 'message', 'title', 'type', 'position'] as const
+const PAYLOAD_KEYS = ['content', 'message', 'title', 'text', 'variant', 'type', 'position'] as const
 
 const isToastPayload = (value: unknown): value is Record<string, unknown> =>
 	isObject(value) && PAYLOAD_KEYS.some(key => key in value)
@@ -223,6 +232,32 @@ export function createSafeToastState(): ToastState {
 	return { toasts: [], handlers: createSafeHandlers() }
 }
 
+/** Keys of the `{toast, key}` entry Discord's toast store holds per surface. */
+const ENTRY_KEYS = ['toast', 'key'] as const
+
+const hasEntryShape = (value: Record<string, unknown>) =>
+	ENTRY_KEYS.some(key => Object.prototype.hasOwnProperty.call(value, key))
+
+/**
+ * Repairs one entry selected out of Discord's toast store.
+ *
+ * Newer builds keep `currentToastMap: Map<key, {toast, key}>` and the container
+ * hook selects `state.currentToastMap.get(key)`, then reads `entry.toast.position`
+ * without ever checking `entry.toast`. A `showToast()` that arrived without a
+ * payload stores `{toast: undefined, key}`, and that read is exactly the
+ * `Cannot read property 'position' of undefined` crash.
+ *
+ * Such an entry is reported as `null` — the "no toast" value the hook already
+ * guards for — instead of a fabricated toast, which would render an empty
+ * bubble. Anything that is not an entry is handed back untouched, so selectors
+ * returning a map, a boolean or a plain value keep working.
+ */
+export function repairToastEntry(slice: unknown): unknown {
+	if (!isObject(slice)) return slice
+	if (!hasEntryShape(slice)) return slice
+	return slice.toast == null ? null : slice
+}
+
 /**
  * Repairs a hook result. Returns the very same object when nothing needed
  * fixing, so consumers comparing by identity do not re-render.
@@ -232,6 +267,11 @@ export function repairToastState(state: unknown, options: RepairOptions = {}): T
 	// spreading it into an object would only break the consumer.
 	if (Array.isArray(state)) return state as unknown as ToastState
 	if (!isObject(state)) return createSafeToastState()
+
+	// Some builds return something else entirely (e.g. `{entry, position}`);
+	// adding `toasts`/`handlers` there would only change the object's identity
+	// on every render. There is nothing to repair in a state without them.
+	if (!('toasts' in state) && !('handlers' in state)) return state as ToastState
 
 	const toasts = repairToasts(state.toasts, options)
 	const handlers = normalizeHandlers(state.handlers)

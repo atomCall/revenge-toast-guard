@@ -9,28 +9,30 @@ import type { LegacyApi } from './types'
  * every time the storage proxy emits a `SET`/`DEL` event.
  */
 export default function createSettings(api: LegacyApi, storage: Partial<Settings>) {
-	const React = api.metro.common.React
-	const { Forms } = api.ui.components
-
 	const read = (key: keyof Settings): boolean => storage[key] ?? DEFAULT_SETTINGS[key]
 	const write = (key: keyof Settings) => (value: boolean) => {
 		storage[key] = value
 	}
 
-	const row = (key: keyof Settings, label: string, subLabel: string) =>
-		React.createElement(Forms.FormRow, {
-			key,
-			label,
-			subLabel,
-			trailing: React.createElement(Forms.FormSwitch, {
-				value: read(key),
-				onValueChange: write(key),
-			}),
-		})
-
 	return function ToastGuardSettings() {
+		// Resolved at render time: `metro.common.React` and `Forms` are lazy
+		// lookups, and the loader builds this component before Discord settles.
+		const React = api.metro.common.React
+		const { Forms } = api.ui.components
+
 		// Subscribes to storage writes so toggling a switch re-renders the page
 		api.storage.useProxy(storage)
+
+		const row = (key: keyof Settings, label: string, subLabel: string) =>
+			React.createElement(Forms.FormRow, {
+				key,
+				label,
+				subLabel,
+				trailing: React.createElement(Forms.FormSwitch, {
+					value: read(key),
+					onValueChange: write(key),
+				}),
+			})
 
 		return React.createElement(
 			Forms.FormSection,
@@ -53,3 +55,4 @@ export default function createSettings(api: LegacyApi, storage: Partial<Settings
 		)
 	}
 }
+

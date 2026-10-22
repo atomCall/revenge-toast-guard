@@ -179,23 +179,23 @@ function guardToastState(invoke, options = {}) {
 
 // src/legacy/settings.ts
 function createSettings(api, storage) {
-  const React = api.metro.common.React;
-  const { Forms } = api.ui.components;
   const read = (key) => storage[key] ?? DEFAULT_SETTINGS[key];
   const write = (key) => (value) => {
     storage[key] = value;
   };
-  const row = (key, label, subLabel) => React.createElement(Forms.FormRow, {
-    key,
-    label,
-    subLabel,
-    trailing: React.createElement(Forms.FormSwitch, {
-      value: read(key),
-      onValueChange: write(key)
-    })
-  });
   return function ToastGuardSettings() {
+    const React = api.metro.common.React;
+    const { Forms } = api.ui.components;
     api.storage.useProxy(storage);
+    const row = (key, label, subLabel) => React.createElement(Forms.FormRow, {
+      key,
+      label,
+      subLabel,
+      trailing: React.createElement(Forms.FormSwitch, {
+        value: read(key),
+        onValueChange: write(key)
+      })
+    });
     return React.createElement(Forms.FormSection, { title: "Toast Guard" }, row("sanitizeContainer", "Guard the toast container", "Drops malformed toasts instead of crashing the screen that renders them."), row("sanitizeDispatcher", "Fix toasts at the source", "Gives a missing position to toasts before Discord enqueues them."), row("logDiagnostics", "Log dropped toasts", "Writes what was fixed or dropped to the React Native log."));
   };
 }

@@ -1,5 +1,5 @@
 import { DEFAULT_SETTINGS, type Settings } from '../config'
-import { ensurePosition, guardToastState, type ToastState } from '../toastGuard'
+import { ensurePosition, guardToastState } from '../toastGuard'
 import createSettings from './settings'
 import type { AnyFunction, LegacyApi, LegacyModule, LegacyPlugin } from './types'
 
@@ -21,12 +21,7 @@ const RETRY_INTERVAL = 1_000
 const MAX_SCANS = 15
 
 const HOOK_KEYS = ['useToastContainer'] as const
-const COMPONENT_KEYS = ['ToastContainer'] as const
 const DISPATCH_KEYS = ['showToast', 'addToast', 'pushToast', 'enqueueToast', 'createToast'] as const
-
-/** Class components cannot be called with `Reflect.apply`. */
-const isCallableComponent = (value: unknown): value is AnyFunction =>
-	typeof value === 'function' && !/^class\s/.test(Function.prototype.toString.call(value))
 
 export default function ToastGuard(): LegacyPlugin {
 	// The loader passes a per-plugin copy of the API (it carries `plugin.storage`)
@@ -39,9 +34,7 @@ export default function ToastGuard(): LegacyPlugin {
 
 	let diagnostics = 0
 	let dispatchersPatched = 0
-	let lastGood: ToastState | undefined
 	let hookPatched = false
-	let componentPatched = false
 	let scans = 0
 	let timer: ReturnType<typeof setTimeout> | undefined
 	let finished = false
@@ -55,12 +48,12 @@ export default function ToastGuard(): LegacyPlugin {
 		console.warn(`[ToastGuard] ${label}`, detail)
 	}
 
-	function guardOptions() {
+	function repairOptions() {
 		return {
 			// No explicit default: a missing position inherits its sibling's,
 			// and only falls back to DEFAULT_POSITION when nothing is usable.
-			onInvalid: (reason: string, entry: unknown) => diagnose(`dropped toast (${reason})`, entry),
-			onError: (error: unknown) => diagnose('toast container crashed, using safe state', error),
+			onInvalid: (reason: string, entry: unknown, index: number) =>
+				diagnose(`repaired toast (${reason}) at ${index}`, entry),
 		}
 	}
 
@@ -75,40 +68,10 @@ export default function ToastGuard(): LegacyPlugin {
 				function (this: unknown, args: any[], original: AnyFunction) {
 					if (!settings().sanitizeContainer) return Reflect.apply(original, this, args)
 
-					const state = guardToastState(() => Reflect.apply(original, this, args), {
-						...guardOptions(),
-						// Keeping the last good state avoids a flash of empty toasts
-						// and keeps the container's hook output shape stable.
-						fallback: lastGood,
-					})
-
-					lastGood = state
-					return state
-				},
-			),
-		)
-
-		return true
-	}
-
-	function patchComponent(module: LegacyModule): boolean {
-		if (!isCallableComponent(module.ToastContainer)) return false
-
-		componentPatched = true
-		unpatch.push(
-			api.patcher.instead(
-				'ToastContainer',
-				module,
-				function (this: unknown, args: any[], original: AnyFunction) {
-					if (!settings().sanitizeContainer) return Reflect.apply(original, this, args)
-
-					try {
-						return Reflect.apply(original, this, args)
-					} catch (error) {
-						// Last line of defence: the screen survives, the toast does not.
-						diagnose('toast container component threw, rendering nothing', error)
-						return null
-					}
+					// The original hook is called straight through: swallowing an
+					// exception raised inside it would desync React's hook list and
+					// crash the next render with `areHookInputsEqual`.
+					return guardToastState(() => Reflect.apply(original, this, args), repairOptions())
 				},
 			),
 		)
@@ -167,11 +130,11 @@ export default function ToastGuard(): LegacyPlugin {
 
 		if (settings().logDiagnostics) {
 			console.log(
-				`[ToastGuard] active (hook: ${hookPatched}, component: ${componentPatched}, dispatchers: ${dispatchersPatched})`,
+				`[ToastGuard] active (hook: ${hookPatched}, dispatchers: ${dispatchersPatched})`,
 			)
 		}
 
-		if (!hookPatched && !componentPatched) {
+		if (!hookPatched) {
 			console.warn(
 				'[ToastGuard] could not find the toast container in this Discord build; nothing was patched',
 			)
@@ -193,17 +156,6 @@ export default function ToastGuard(): LegacyPlugin {
 			}
 		}
 
-		if (!hookPatched && !componentPatched) {
-			const module = findOne(COMPONENT_KEYS[0])
-			if (module) {
-				try {
-					patchComponent(module)
-				} catch (error) {
-					diagnose('could not patch ToastContainer', error)
-				}
-			}
-		}
-
 		if (dispatchersPatched === 0) {
 			for (const key of DISPATCH_KEYS) {
 				for (const module of findAll(key)) {
@@ -216,8 +168,7 @@ export default function ToastGuard(): LegacyPlugin {
 			}
 		}
 
-		const found = hookPatched || componentPatched
-		if ((found && dispatchersPatched > 0) || scans >= MAX_SCANS) {
+		if ((hookPatched && dispatchersPatched > 0) || scans >= MAX_SCANS) {
 			report()
 			return
 		}

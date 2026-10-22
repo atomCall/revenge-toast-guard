@@ -17,7 +17,7 @@ export default function SettingsComponent({ api: { jsonStorage: storage } }: Pro
 			<TableRowGroup title="Protection">
 				<TableSwitchRow
 					label="Guard the toast container"
-					subLabel="Drops malformed toasts instead of crashing the screen that renders them."
+					subLabel="Repairs malformed toasts in place instead of crashing the screen that renders them."
 					icon={<TableRowAssetIcon name="EyeSlashIcon" />}
 					value={settings.sanitizeContainer}
 					onValueChange={(value: boolean) => storage.set({ sanitizeContainer: value })}
@@ -33,8 +33,8 @@ export default function SettingsComponent({ api: { jsonStorage: storage } }: Pro
 
 			<TableRowGroup title="Diagnostics">
 				<TableSwitchRow
-					label="Log dropped toasts"
-					subLabel="Writes what was fixed or dropped to the React Native log."
+					label="Log repaired toasts"
+					subLabel="Writes what was repaired or replaced to the React Native log."
 					icon={<TableRowAssetIcon name="ArrowAngleLeftUpIcon" />}
 					value={settings.logDiagnostics}
 					onValueChange={(value: boolean) => storage.set({ logDiagnostics: value })}

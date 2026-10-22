@@ -3,11 +3,11 @@
 	"description": "Stops 'Cannot read property position of undefined' crashes coming from Discord's toast container.",
 	"authors": [
 		{
-			"name": "attard"
+			"name": "Andrei"
 		}
 	],
 	"main": "dist/legacy.js",
-	"hash": "9a7a32eea398ee66c2c700b672380df7886fffa46bf6312b2e3bf504bcbb69a7",
+	"hash": "52675a59b694e755d59c1d685064f19201ca7574808dbacb5ac4d86285e1f3e9",
 	"vendetta": {
 		"icon": "ShieldIcon"
 	}

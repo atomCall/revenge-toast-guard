@@ -29,11 +29,15 @@ function createRuntime() {
 	const delivered: AnyRecord[] = []
 	const storage: AnyRecord = {}
 
+	const toastState: AnyRecord = {
+		toasts: [null, { id: 'a', position: 'bottom' }, { id: 'b' }],
+		handlers: {},
+	}
+
+	let current = toastState
+
 	const toastModule: AnyRecord = {
-		useToastContainer: () => ({
-			toasts: [null, { id: 'a', position: 'bottom' }, { id: 'b' }],
-			handlers: {},
-		}),
+		useToastContainer: () => current,
 	}
 
 	const dispatcher: AnyRecord = {
@@ -87,7 +91,17 @@ function createRuntime() {
 		plugin: { id: 'https://example.test/plugin/', manifest: {}, storage },
 	}
 
-	return { api, toastModule, dispatcher, delivered, storage }
+	return {
+		api,
+		toastModule,
+		toastState,
+		dispatcher,
+		delivered,
+		storage,
+		setToastState(next: AnyRecord) {
+			current = next
+		},
+	}
 }
 
 function start() {
@@ -103,16 +117,37 @@ function start() {
 }
 
 test('the container hook never hands a malformed toast to the renderer', () => {
-	const { toastModule } = start()
+	const { toastModule, toastState } = start()
 	const state = toastModule.useToastContainer()
 
-	assert.equal(state.toasts.length, 2)
-	assert.deepEqual(
-		state.toasts.map((toast: AnyRecord) => toast.id),
-		['a', 'b'],
-	)
+	// Same length and order as Discord's list: changing either makes the
+	// container render a different number of hooks and React then throws
+	// `Cannot read property 'length' of undefined` in areHookInputsEqual.
+	assert.equal(state.toasts.length, toastState.toasts.length)
+	assert.equal(typeof state.toasts[0].id, 'string')
+	assert.equal(state.toasts[1].id, 'a')
+	assert.equal(state.toasts[2].id, 'b')
 	// A missing position inherits its sibling's
-	assert.equal(state.toasts[1].position, 'bottom')
+	assert.equal(state.toasts[2].position, 'bottom')
+	// Discord's own state is left untouched
+	assert.equal(toastState.toasts[0], null)
+})
+
+test('a healthy container keeps its state identity across renders', () => {
+	const { toastModule, setToastState } = start()
+
+	const handlers = {
+		updateHeight: () => undefined,
+		startPause: () => undefined,
+		endPause: () => undefined,
+		calculateOffset: () => 0,
+	}
+	const healthy = { toasts: [{ id: 'a', position: 'top' }], handlers }
+	setToastState(healthy)
+
+	// Nothing to repair: the same object comes back, so consumers that compare
+	// by identity do not re-render.
+	assert.equal(toastModule.useToastContainer(), healthy)
 })
 
 test('a toast without a position gets one before Discord enqueues it', () => {
@@ -124,10 +159,13 @@ test('a toast without a position gets one before Discord enqueues it', () => {
 })
 
 test('onUnload restores the original modules', () => {
-	const { toastModule, dispatcher, delivered, plugin } = start()
+	const { toastModule, toastState, dispatcher, delivered, plugin } = start()
 	plugin.onUnload()
 
-	assert.equal(toastModule.useToastContainer().toasts.length, 3)
+	const state = toastModule.useToastContainer()
+	assert.equal(state, toastState)
+	assert.equal(state.toasts.length, 3)
+	assert.equal('position' in state.toasts[2], false)
 
 	const payload: AnyRecord = { content: 'hello' }
 	dispatcher.showToast(payload)
@@ -136,18 +174,18 @@ test('onUnload restores the original modules', () => {
 })
 
 test('the settings component toggles the stored settings', () => {
-	const { storage, plugin, toastModule } = start()
+	const { storage, plugin, toastModule, toastState } = start()
 	const element = (plugin.settings as AnyFunction)()
 
 	assert.equal(element.type, 'FormSection')
 	const rows = element.children as AnyRecord[]
 	assert.deepEqual(
 		rows.map(row => row.props.label),
-		['Guard the toast container', 'Fix toasts at the source', 'Log dropped toasts'],
+		['Guard the toast container', 'Fix toasts at the source', 'Log repaired toasts'],
 	)
 
 	// Turning the guard off leaves Discord's own state alone
 	rows[0].props.trailing.props.onValueChange(false)
 	assert.equal(storage.sanitizeContainer, false)
-	assert.equal(toastModule.useToastContainer().toasts.length, 3)
+	assert.equal(toastModule.useToastContainer(), toastState)
 })

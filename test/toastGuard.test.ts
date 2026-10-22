@@ -7,126 +7,132 @@ import {
 	guardToastState,
 	inferDefaultPosition,
 	normalizeHandlers,
-	normalizeToastState,
-	sanitizeToast,
-	sanitizeToasts,
+	repairToast,
+	repairToastState,
+	repairToasts,
 } from '../src/toastGuard.ts'
 
-test('sanitizeToast keeps an already valid toast untouched', () => {
+test('repairToast keeps an already valid toast untouched', () => {
 	const toast = { id: 'a', position: 'bottom', content: 'hi' }
-	const result = sanitizeToast(toast)
 
-	assert.equal(result.ok, true)
-	assert.equal(result.ok && result.toast, toast)
+	assert.equal(repairToast(toast), toast)
 })
 
-test('sanitizeToast fills a missing position with the default', () => {
-	const result = sanitizeToast({ id: 'a', content: 'hi' })
+test('repairToast fills a missing position with the default', () => {
+	const repaired = repairToast({ id: 'a', content: 'hi' })
 
-	assert.equal(result.ok, true)
-	assert.equal(result.ok && result.toast.position, DEFAULT_POSITION)
-	assert.equal(result.ok && result.toast.content, 'hi')
+	assert.equal(repaired.position, DEFAULT_POSITION)
+	assert.equal(repaired.content, 'hi')
 })
 
-test('sanitizeToast fills an empty position', () => {
-	const result = sanitizeToast({ id: 'a', position: '' })
-
-	assert.equal(result.ok, true)
-	assert.equal(result.ok && result.toast.position, DEFAULT_POSITION)
+test('repairToast fills an empty position', () => {
+	assert.equal(repairToast({ id: 'a', position: '' }).position, DEFAULT_POSITION)
 })
 
-test('sanitizeToast keeps non-string positions that are not empty', () => {
-	const result = sanitizeToast({ id: 'a', position: 3 })
-
-	assert.equal(result.ok, true)
-	assert.equal(result.ok && result.toast.position, 3)
+test('repairToast keeps non-string positions that are not empty', () => {
+	assert.equal(repairToast({ id: 'a', position: 3 }).position, 3)
 })
 
-test('sanitizeToast rejects values that are not objects', () => {
+test('repairToast does not mutate the toast it repairs', () => {
+	const toast = { id: 'a' }
+
+	repairToast(toast)
+
+	assert.equal('position' in toast, false)
+})
+
+test('repairToast replaces unrenderable entries with a renderable placeholder', () => {
 	for (const value of [undefined, null, 42, 'toast', true]) {
-		const result = sanitizeToast(value)
+		const repaired = repairToast(value, 2, { defaultPosition: 'top' })
 
-		assert.equal(result.ok, false)
-		assert.equal(result.ok === false && result.reason, 'not-an-object')
+		assert.equal(typeof repaired.id, 'string')
+		assert.equal(repaired.position, 'top')
+		// The same slot keeps the same placeholder, so React keys stay stable
+		assert.equal(repairToast(value, 2, { defaultPosition: 'top' }), repaired)
 	}
 })
 
-test('sanitizeToast rejects entries without a usable id', () => {
-	for (const value of [{}, { id: '' }, { id: null }, { id: Number.NaN }]) {
-		const result = sanitizeToast(value)
-
-		assert.equal(result.ok, false)
-		assert.equal(result.ok === false && result.reason, 'missing-id')
-	}
-})
-
-test('sanitizeToast accepts numeric ids', () => {
-	const result = sanitizeToast({ id: 7 })
-
-	assert.equal(result.ok, true)
-	assert.equal(result.ok && result.toast.id, 7)
-})
-
-test('sanitizeToasts drops the undefined entries that cause the crash', () => {
-	const input = [{ id: 'a', position: 'top' }, undefined, null, { id: 'b' }]
-	const invalid: unknown[] = []
-
-	const toasts = sanitizeToasts(input, {
-		onInvalid: (_reason, entry) => invalid.push(entry),
-	})
-
-	assert.deepEqual(
-		toasts.map(toast => toast.id),
-		['a', 'b'],
-	)
-	assert.equal(invalid.length, 2)
-	// `{ id: 'b' }` inherits the position of the valid sibling instead of guessing one
-	assert.equal(toasts[1].position, 'top')
-})
-
-test('sanitizeToasts returns an empty list for non-array input', () => {
+test('repairToast reports what it had to replace', () => {
 	const reasons: string[] = []
 
-	assert.deepEqual(sanitizeToasts(undefined, { onInvalid: reason => reasons.push(reason) }), [])
-	assert.deepEqual(sanitizeToasts({ 0: { id: 'a' } }, { onInvalid: reason => reasons.push(reason) }), [])
-	assert.deepEqual(reasons, ['not-an-array', 'not-an-array'])
+	repairToast(undefined, 1, { onInvalid: reason => reasons.push(reason) })
+	repairToast({ id: 'a' }, 0, { onInvalid: reason => reasons.push(reason) })
+
+	assert.deepEqual(reasons, ['not-an-object', 'missing-position'])
 })
 
-test('sanitizeToasts keeps the last entry for a duplicated id', () => {
-	const first = { id: 'a', position: 'top', content: 'old' }
-	const last = { id: 'a', position: 'bottom', content: 'new' }
+test('repairToasts keeps the length and the order of the list', () => {
+	const input = [{ id: 'a', position: 'top' }, undefined, null, { id: 'b' }]
 
-	const toasts = sanitizeToasts([first, { id: 'b' }, last])
+	const toasts = repairToasts(input)
 
-	assert.deepEqual(
-		toasts.map(toast => toast.id),
-		['b', 'a'],
-	)
-	assert.equal(toasts[1], last)
+	assert.equal(toasts.length, input.length)
+	assert.equal(toasts[0].id, 'a')
+	assert.equal(typeof toasts[1].id, 'string')
+	assert.equal(typeof toasts[2].id, 'string')
+	assert.equal(toasts[3].id, 'b')
+	// A missing position inherits its sibling's instead of guessing one
+	assert.equal(toasts[3].position, 'top')
 })
 
-test('sanitizeToasts does not mutate its input', () => {
+test('repairToasts fills the holes of a sparse list', () => {
+	const input: unknown[] = new Array(3)
+	input[1] = { id: 'a', position: 'top' }
+
+	const toasts = repairToasts(input)
+
+	assert.equal(toasts.length, 3)
+	for (const toast of toasts) assert.equal(typeof toast.id, 'string')
+})
+
+test('repairToasts returns the input array when everything is renderable', () => {
+	const input = [{ id: 'a', position: 'top' }]
+
+	assert.equal(repairToasts(input), input)
+	assert.deepEqual(repairToasts([]), [])
+})
+
+test('repairToasts does not mutate its input', () => {
 	const input = [{ id: 'a' }, { id: 'b', position: 'top' }]
 	const snapshot = structuredClone(input)
 
-	sanitizeToasts(input)
+	const toasts = repairToasts(input)
 
 	assert.deepEqual(input, snapshot)
-	assert.notEqual(sanitizeToasts(input)[0], input[0])
+	assert.notEqual(toasts[0], input[0])
 })
 
-test('sanitizeToasts inherits the position of a valid sibling when no default is given', () => {
-	const toasts = sanitizeToasts([{ id: 'a', position: 'bottom' }, { id: 'b' }])
-
-	assert.equal(toasts[1].position, 'bottom')
-})
-
-test('sanitizeToasts respects an explicit default over the siblings', () => {
-	const toasts = sanitizeToasts([{ id: 'a', position: 'bottom' }, { id: 'b' }], {
+test('repairToasts respects an explicit default over the siblings', () => {
+	const toasts = repairToasts([{ id: 'a', position: 'bottom' }, { id: 'b' }], {
 		defaultPosition: 'top',
 	})
 
 	assert.equal(toasts[1].position, 'top')
+})
+
+test('repairToasts returns an empty list for non-array input', () => {
+	const reasons: string[] = []
+	const onInvalid = (reason: string) => reasons.push(reason)
+
+	assert.deepEqual(repairToasts(undefined, { onInvalid }), [])
+	assert.deepEqual(repairToasts({ 0: { id: 'a' } }, { onInvalid }), [])
+	assert.deepEqual(reasons, ['not-an-array', 'not-an-array'])
+})
+
+test('repairToasts reports a duplicated id but keeps both entries', () => {
+	const first = { id: 'a', position: 'top', content: 'old' }
+	const last = { id: 'a', position: 'bottom', content: 'new' }
+	const reasons: string[] = []
+
+	const toasts = repairToasts([first, { id: 'b', position: 'top' }, last], {
+		onInvalid: reason => reasons.push(reason),
+	})
+
+	// Same length: dropping the stale entry would change how many items (and,
+	// in some builds, how many hooks) the container renders.
+	assert.equal(toasts.length, 3)
+	assert.equal(toasts[2], last)
+	assert.deepEqual(reasons, ['duplicate-id'])
 })
 
 test('inferDefaultPosition finds the first usable position', () => {
@@ -173,34 +179,64 @@ test('createSafeToastState returns an empty, renderable state', () => {
 	assert.equal(state.handlers.calculateOffset(), 0)
 })
 
-test('normalizeToastState preserves extra state fields and sanitizes toasts', () => {
-	const state = normalizeToastState({
+test('repairToastState preserves extra state fields and repairs toasts', () => {
+	const state = repairToastState({
 		toasts: [{ id: 'a' }, undefined],
 		handlers: { calculateOffset: () => 5 },
 		pausedAt: 123,
 	})
 
 	assert.equal(state.pausedAt, 123)
-	assert.equal(state.toasts.length, 1)
+	assert.equal(state.toasts.length, 2)
 	assert.equal(state.handlers.calculateOffset(), 5)
 	assert.equal(typeof state.handlers.endPause, 'function')
 })
 
-test('normalizeToastState leaves an unexpected shape alone', () => {
-	const tuple = [{ id: 'a', position: 'top' }, { dismiss: () => {} }]
+test('repairToastState returns the same object when nothing needs fixing', () => {
+	const handlers = {
+		updateHeight: () => undefined,
+		startPause: () => undefined,
+		endPause: () => undefined,
+		calculateOffset: () => 0,
+	}
+	const state = { toasts: [{ id: 'a', position: 'top' }], handlers }
 
-	assert.equal(normalizeToastState(tuple), tuple)
+	assert.equal(repairToastState(state), state)
 })
 
-test('guardToastState returns the normalized state of a healthy hook', () => {
-	let errors = 0
-	const state = guardToastState(() => ({ toasts: [{ id: 'a', position: 'top' }] }), {
-		onError: () => errors++,
-	})
+test('repairToastState leaves an unexpected shape alone', () => {
+	const tuple = [{ id: 'a', position: 'top' }, { dismiss: () => {} }]
 
-	assert.equal(errors, 0)
+	assert.equal(repairToastState(tuple), tuple)
+})
+
+test('guardToastState returns the repaired state of a healthy hook', () => {
+	const state = guardToastState(() => ({ toasts: [{ id: 'a' }] }))
+
 	assert.equal(state.toasts.length, 1)
+	assert.equal(state.toasts[0].position, DEFAULT_POSITION)
 	assert.equal(typeof state.handlers.calculateOffset, 'function')
+})
+
+test('guardToastState lets a throwing hook unwind the render', () => {
+	// Swallowing it would leave React's hook list short for this render, which
+	// resurfaces as `areHookInputsEqual` reading `undefined.length` next time.
+	assert.throws(
+		() =>
+			guardToastState(() => {
+				throw new Error('hook failed')
+			}),
+		/hook failed/,
+	)
+})
+
+test('guardToastState tolerates hooks returning nothing usable', () => {
+	for (const value of [undefined, null, 'nope', 0]) {
+		const state = guardToastState(() => value)
+
+		assert.deepEqual(state.toasts, [])
+		assert.equal(state.handlers.calculateOffset(), 0)
+	}
 })
 
 test('ensurePosition fills a missing position on a toast payload', () => {
@@ -247,59 +283,4 @@ test('ensurePosition never throws on a frozen payload', () => {
 
 	assert.doesNotThrow(() => ensurePosition(payload))
 	assert.equal(ensurePosition(payload), false)
-})
-
-test('guardToastState swallows the crash and reports it', () => {
-	const crash = new TypeError("Cannot read property 'position' of undefined")
-	let reported: unknown
-	let state: ReturnType<typeof guardToastState> | undefined
-
-	assert.doesNotThrow(() => {
-		state = guardToastState(
-			() => {
-				throw crash
-			},
-			{ onError: error => (reported = error) },
-		)
-	})
-
-	assert.equal(reported, crash)
-	assert.deepEqual(state!.toasts, [])
-})
-
-test('guardToastState falls back to the last known good state', () => {
-	const fallback = normalizeToastState({ toasts: [{ id: 'a', position: 'top' }] })
-	const state = guardToastState(
-		() => {
-			throw new Error('boom')
-		},
-		{ fallback },
-	)
-
-	assert.equal(state, fallback)
-	assert.equal(state.toasts.length, 1)
-})
-
-test('guardToastState tolerates hooks returning nothing usable', () => {
-	for (const value of [undefined, null, 'nope', 0]) {
-		const state = guardToastState(() => value)
-
-		assert.deepEqual(state.toasts, [])
-		assert.equal(state.handlers.calculateOffset(), 0)
-	}
-})
-
-test('guardToastState does not throw when onError throws', () => {
-	const state = guardToastState(
-		() => {
-			throw new Error('boom')
-		},
-		{
-			onError: () => {
-				throw new Error('reporting failed')
-			},
-		},
-	)
-
-	assert.deepEqual(state.toasts, [])
 })

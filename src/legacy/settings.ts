@@ -40,7 +40,7 @@ export default function createSettings(api: LegacyApi, storage: Partial<Settings
 			row(
 				'sanitizeContainer',
 				'Guard the toast container',
-				'Drops malformed toasts instead of crashing the screen that renders them.',
+				'Repairs malformed toasts in place instead of crashing the screen that renders them.',
 			),
 			row(
 				'sanitizeDispatcher',
@@ -49,8 +49,8 @@ export default function createSettings(api: LegacyApi, storage: Partial<Settings
 			),
 			row(
 				'logDiagnostics',
-				'Log dropped toasts',
-				'Writes what was fixed or dropped to the React Native log.',
+				'Log repaired toasts',
+				'Writes what was repaired or replaced to the React Native log.',
 			),
 		)
 	}

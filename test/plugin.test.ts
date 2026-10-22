@@ -127,30 +127,34 @@ test('the bundle exports a plugin definition with a settings component', async (
 	assert.equal(typeof definition.stop, 'function')
 })
 
-test('a healthy toast container is returned normalized', async () => {
-	const module = {
-		useToastContainer: () => ({ toasts: [{ id: 'a', position: 'top' }], handlers: handlers() }),
-	}
+test('a healthy toast container is returned untouched', async () => {
+	const healthy = { toasts: [{ id: 'a', position: 'top' }], handlers: handlers() }
+	const module = { useToastContainer: () => healthy }
 	await startPlugin([module])
 
 	const state = module.useToastContainer()
 
-	assert.equal(state.toasts.length, 1)
+	assert.equal(state, healthy)
 	assert.equal(state.toasts[0].position, 'top')
 	assert.equal(state.handlers.calculateOffset(), 0)
 })
 
-test('the crash is contained and the container keeps rendering', async () => {
+test('a malformed entry is replaced without changing the list length', async () => {
 	const module = {
 		useToastContainer: () => {
 			const toasts: any[] = [{ id: 'a', position: 'top' }]
-			return { toasts: [toasts[1].position], handlers: handlers() }
+			// Reading a hole is what crashes Discord's container
+			return { toasts: [toasts[1], { id: 'b', position: 'top' }], handlers: handlers() }
 		},
 	}
 	await startPlugin([module])
 
 	assert.doesNotThrow(() => module.useToastContainer())
-	assert.deepEqual(module.useToastContainer().toasts, [])
+
+	const state = module.useToastContainer()
+	assert.equal(state.toasts.length, 2)
+	assert.equal(typeof state.toasts[0].id, 'string')
+	assert.equal(state.toasts[1].id, 'b')
 })
 
 test('an entry without a position inherits the sibling position', async () => {
@@ -191,15 +195,16 @@ test('turning the dispatcher guard off leaves the payload alone', async () => {
 	assert.equal('position' in module.showToast({ content: 'hi' }), false)
 })
 
-test('the component guard renders nothing instead of throwing', async () => {
+test('a throwing hook is not swallowed by the guard', async () => {
 	const module = {
-		ToastContainer: () => {
+		useToastContainer: () => {
 			throw new TypeError("Cannot read property 'position' of undefined")
 		},
 	}
 	await startPlugin([module])
 
-	assert.equal(module.ToastContainer(), null)
+	// Swallowing it would desync React's hook list and crash the next render
+	assert.throws(() => module.useToastContainer(), TypeError)
 })
 
 test('stopping the plugin unpatches everything', async () => {

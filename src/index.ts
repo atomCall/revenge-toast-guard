@@ -3,7 +3,7 @@ import { withProps } from '@revenge-mod/modules/finders/filters'
 import { before, instead } from '@revenge-mod/patcher'
 import { DEFAULT_SETTINGS, type Settings } from './config'
 import SettingsComponent from './settings'
-import { ensurePosition, guardToastState, type ToastState } from './toastGuard'
+import { ensurePosition, guardToastState } from './toastGuard'
 
 type AnyRecord = Record<string, any>
 type AnyFunction = (...args: any[]) => any
@@ -11,12 +11,7 @@ type AnyFunction = (...args: any[]) => any
 const MAX_DIAGNOSTICS = 20
 
 const HOOK_KEYS = ['useToastContainer'] as const
-const COMPONENT_KEYS = ['ToastContainer'] as const
 const DISPATCH_KEYS = ['showToast', 'addToast', 'pushToast', 'enqueueToast', 'createToast'] as const
-
-/** Class components cannot be called with `Reflect.apply`. */
-const isCallableComponent = (value: unknown): value is AnyFunction =>
-	typeof value === 'function' && !/^class\s/.test(Function.prototype.toString.call(value))
 
 export default plugin<{ jsonStorage: Settings }>({
 	jsonStorage: {
@@ -30,9 +25,7 @@ export default plugin<{ jsonStorage: Settings }>({
 
 		let diagnostics = 0
 		let dispatchersPatched = 0
-		let lastGood: ToastState | undefined
 		let hookPatched = false
-		let componentPatched = false
 
 		function diagnose(label: string, detail: unknown): void {
 			if (!settings().logDiagnostics || diagnostics >= MAX_DIAGNOSTICS) return
@@ -40,12 +33,12 @@ export default plugin<{ jsonStorage: Settings }>({
 			console.warn(`[ToastGuard] ${label}`, detail)
 		}
 
-		function guardOptions() {
+		function repairOptions() {
 			return {
 				// No explicit default: a missing position inherits its sibling's,
 				// and only falls back to DEFAULT_POSITION when nothing is usable.
-				onInvalid: (reason: string, entry: unknown) => diagnose(`dropped toast (${reason})`, entry),
-				onError: (error: unknown) => diagnose('toast container crashed, using safe state', error),
+				onInvalid: (reason: string, entry: unknown, index: number) =>
+					diagnose(`repaired toast (${reason}) at ${index}`, entry),
 			}
 		}
 
@@ -57,36 +50,10 @@ export default plugin<{ jsonStorage: Settings }>({
 				instead(module, 'useToastContainer', function (this: unknown, args: any[], orig: AnyFunction) {
 					if (!settings().sanitizeContainer) return Reflect.apply(orig, this, args)
 
-					const state = guardToastState(() => Reflect.apply(orig, this, args), {
-						...guardOptions(),
-						// Keeping the last good state avoids a flash of empty toasts
-						// and keeps the container's hook output shape stable.
-						fallback: lastGood,
-					})
-
-					lastGood = state
-					return state
-				}),
-			)
-
-			return true
-		}
-
-		function patchComponent(module: AnyRecord): boolean {
-			if (!isCallableComponent(module.ToastContainer)) return false
-
-			componentPatched = true
-			cleanup(
-				instead(module, 'ToastContainer', function (this: unknown, args: any[], orig: AnyFunction) {
-					if (!settings().sanitizeContainer) return Reflect.apply(orig, this, args)
-
-					try {
-						return Reflect.apply(orig, this, args)
-					} catch (error) {
-						// Last line of defence: the screen survives, the toast does not.
-						diagnose('toast container component threw, rendering nothing', error)
-						return null
-					}
+					// The original hook is called straight through: swallowing an
+					// exception raised inside it would desync React's hook list and
+					// crash the next render with `areHookInputsEqual`.
+					return guardToastState(() => Reflect.apply(orig, this, args), repairOptions())
 				}),
 			)
 
@@ -126,17 +93,6 @@ export default plugin<{ jsonStorage: Settings }>({
 			}),
 		)
 
-		cleanup(
-			getModules(withProps(...COMPONENT_KEYS), (module: AnyRecord) => {
-				if (hookPatched || componentPatched) return
-				try {
-					patchComponent(module)
-				} catch (error) {
-					diagnose('could not patch ToastContainer', error)
-				}
-			}),
-		)
-
 		for (const key of DISPATCH_KEYS) {
 			cleanup(
 				getModules(withProps(key), (module: AnyRecord) => {
@@ -151,11 +107,11 @@ export default plugin<{ jsonStorage: Settings }>({
 
 		if (settings().logDiagnostics) {
 			console.log(
-				`[ToastGuard] active (hook: ${hookPatched}, component: ${componentPatched}, dispatchers: ${dispatchersPatched})`,
+				`[ToastGuard] active (hook: ${hookPatched}, dispatchers: ${dispatchersPatched})`,
 			)
 		}
 
-		if (!hookPatched && !componentPatched) {
+		if (!hookPatched) {
 			console.warn(
 				'[ToastGuard] could not find the toast container in this Discord build; nothing was patched',
 			)

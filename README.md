@@ -80,25 +80,30 @@ Toast Guard fixes the data **and** the read:
 | Layer | What it does | Where |
 | --- | --- | --- |
 | 1. Source | Fills a missing `position` on toast payloads before Discord enqueues them (`showToast` & friends) | `ensurePosition()` |
-| 2. Hook | Wraps `useToastContainer`, drops unusable entries, repairs handlers, and on a throw returns the last good state instead of propagating | `guardToastState()` |
-| 3. Component | If the hook cannot be found, wraps `ToastContainer` so a render throw renders nothing instead of crashing | `index.ts` |
+| 2. Hook | Wraps `useToastContainer` and repairs its result: unusable entries become a renderable placeholder in place, missing positions are filled, handlers are completed | `guardToastState()` |
 
 Nothing is hardcoded to a module ID: the modules are discovered by their
-exported props (`useToastContainer`, `ToastContainer`, `showToast`, ...), so the
-plugin survives Discord updates that renumber modules.
+exported props (`useToastContainer`, `showToast`, ...), so the plugin survives
+Discord updates that renumber modules.
 
 ## Behaviour details
 
-- An entry is kept if it is a non-array object with a non-empty string/numeric
-  `id`. Everything else is dropped and logged.
+- The repaired list keeps Discord's length and order, always. Add nothing, drop
+  nothing, reorder nothing: React tracks hooks positionally, so changing how many
+  entries the container renders can make the next render throw
+  `Cannot read property 'length' of undefined` in React's `areHookInputsEqual`.
+  An entry that cannot be rendered (`undefined`, a hole, a primitive) is replaced
+  at the same index by an inert placeholder with an `id` and a `position`.
 - A toast missing `position` inherits the position of a valid sibling; if there
-  is none it gets `bottom`.
-- Duplicate ids keep the newest entry (a stale entry surviving a removal is the
-  most common shape of this bug).
+  is none it gets `bottom`. The repair is a copy: Discord's own state is never
+  mutated.
+- Duplicate ids are logged but kept, for the same reason: removing one would
+  change the length of the list.
 - `handlers.updateHeight` / `startPause` / `endPause` / `calculateOffset` always
   exist, so a partially initialised container cannot throw either.
-- A throwing `useToastContainer` is contained: the container renders the last
-  good state (or an empty one) and the error is logged once.
+- A throwing `useToastContainer` is *not* swallowed. Swallowing it leaves React's
+  hook list short for that render, which just moves the crash to the next one, so
+  the error is allowed to unwind the render.
 - Disabling a setting takes effect immediately; disabling the plugin reloads
   Discord so the patches are fully removed.
 
@@ -106,9 +111,9 @@ plugin survives Discord updates that renumber modules.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| Guard the toast container | on | Layer 2 + 3 |
+| Guard the toast container | on | Layer 2 |
 | Fix toasts at the source | on | Layer 1 |
-| Log dropped toasts | on | Writes to the React Native log (capped at 20 lines) |
+| Log repaired toasts | on | Writes to the React Native log (capped at 20 lines) |
 
 ## Build
 
@@ -144,16 +149,16 @@ adb logcat -s ReactNativeJS | grep ToastGuard
 On start you should see:
 
 ```
-[ToastGuard] active (hook: true, component: false, dispatchers: 2)
+[ToastGuard] active (hook: true, dispatchers: 2)
 ```
 
-- `hook: false, component: false` → the toast container was not found in this
-  build; the plugin did nothing. Please open an issue with your Discord version.
+- `hook: false` → the toast container was not found in this build; the plugin
+  did nothing. Please open an issue with your Discord version.
 - `filled a missing toast position` → layer 1 caught the root cause.
-- `dropped toast (missing-id)` / `(not-an-object)` → layer 2 caught a malformed
-  entry that would have crashed the container.
-- `toast container crashed, using safe state` → the hook still threw; the crash
-  was contained. Include the logged error in a report.
+- `repaired toast (missing-position) at 0` / `(not-an-object) at 1` → layer 2
+  replaced a malformed entry that would have crashed the container.
+- `repaired toast (duplicate-id) at 2` → a stale entry survived a removal; it is
+  left in place (removing it would change the length of the list).
 
 ## Tests
 
@@ -161,16 +166,17 @@ On start you should see:
 bun run check     # typecheck + build + tests
 ```
 
-Three layers, all runnable without Discord:
+Two layers, all runnable without Discord:
 
-- `test/toastGuard.test.ts` (31 tests) covers the pure logic with Node's built-in
-  runner: entry sanitising, position inference, handler repair, state
-  normalisation, payload completion, crash containment.
+- `test/toastGuard.test.ts` covers the pure logic with Node's built-in runner:
+  entry repair, list length/order preservation, position inference, handler
+  repair, state repair, payload completion, and that hook errors are not
+  swallowed.
 - `test/plugin.test.ts` (9 tests) loads the real Revenge Next bundle against
   stubbed runtime modules, so it also validates the `plugin()` definition, module
   discovery by props, the `instead`/`before` hook contract, the settings
   switches, and unpatching on stop.
-- `test/legacy.test.ts` (4 tests) replays `evalPlugin` from Revenge legacy
+- `test/legacy.test.ts` replays `evalPlugin` from Revenge legacy
   (`vendetta => { return <bundle> }`) against a stubbed Vendetta API: the plugin
   object shape, the guarded hook, dispatcher payload completion, unpatching on
   `onUnload`, and the settings switches.

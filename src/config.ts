@@ -3,7 +3,7 @@ export interface Settings {
 	sanitizeContainer: boolean
 	/** Fill a missing `position` before Discord enqueues a toast (root cause). */
 	sanitizeDispatcher: boolean
-	/** Log what was dropped/fixed to `logcat | grep ReactNativeJS`. */
+	/** Log what was repaired to `logcat | grep ReactNativeJS`. */
 	logDiagnostics: boolean
 }
 

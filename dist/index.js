@@ -25,7 +25,7 @@ function SettingsComponent({ api: { jsonStorage: storage } }) {
         children: [
           /* @__PURE__ */ jsx(TableSwitchRow, {
             label: "Guard the toast container",
-            subLabel: "Drops malformed toasts instead of crashing the screen that renders them.",
+            subLabel: "Repairs malformed toasts in place instead of crashing the screen that renders them.",
             icon: /* @__PURE__ */ jsx(TableRowAssetIcon, {
               name: "EyeSlashIcon"
             }),
@@ -46,8 +46,8 @@ function SettingsComponent({ api: { jsonStorage: storage } }) {
       /* @__PURE__ */ jsx(TableRowGroup, {
         title: "Diagnostics",
         children: /* @__PURE__ */ jsx(TableSwitchRow, {
-          label: "Log dropped toasts",
-          subLabel: "Writes what was fixed or dropped to the React Native log.",
+          label: "Log repaired toasts",
+          subLabel: "Writes what was repaired or replaced to the React Native log.",
           icon: /* @__PURE__ */ jsx(TableRowAssetIcon, {
             name: "ArrowAngleLeftUpIcon"
           }),
@@ -61,6 +61,7 @@ function SettingsComponent({ api: { jsonStorage: storage } }) {
 
 // src/toastGuard.ts
 var DEFAULT_POSITION = "bottom";
+var placeholders = new Map;
 var isFunction = (value) => typeof value === "function";
 var isObject = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 var hasUsableId = (entry) => typeof entry.id === "string" && entry.id.length > 0 || typeof entry.id === "number" && Number.isFinite(entry.id);
@@ -79,17 +80,20 @@ function ensurePosition(target, defaultPosition = DEFAULT_POSITION) {
     return false;
   }
 }
-function sanitizeToast(entry, options = {}) {
-  if (!isObject(entry))
-    return { ok: false, reason: "not-an-object" };
-  if (!hasUsableId(entry))
-    return { ok: false, reason: "missing-id" };
+function repairToast(entry, index = 0, options = {}) {
+  const defaultPosition = options.defaultPosition ?? DEFAULT_POSITION;
+  if (!isObject(entry)) {
+    options.onInvalid?.("not-an-object", entry, index);
+    return placeholderFor(index, defaultPosition);
+  }
   if (hasUsablePosition(entry.position))
-    return { ok: true, toast: entry };
-  return {
-    ok: true,
-    toast: { ...entry, position: options.defaultPosition ?? DEFAULT_POSITION }
-  };
+    return entry;
+  options.onInvalid?.("missing-position", entry, index);
+  try {
+    return { ...entry, position: defaultPosition };
+  } catch {
+    return placeholderFor(index, defaultPosition);
+  }
 }
 function inferDefaultPosition(list) {
   if (!Array.isArray(list))
@@ -102,26 +106,44 @@ function inferDefaultPosition(list) {
   }
   return DEFAULT_POSITION;
 }
-function sanitizeToasts(list, options = {}) {
+function placeholderFor(index, position) {
+  const cached = placeholders.get(index);
+  if (cached && cached.position === position)
+    return cached;
+  const placeholder = {
+    id: `toast-guard-placeholder-${index}`,
+    position,
+    content: null
+  };
+  placeholders.set(index, placeholder);
+  return placeholder;
+}
+function repairToasts(list, options = {}) {
   if (!Array.isArray(list)) {
-    options.onInvalid?.("not-an-array", list);
+    options.onInvalid?.("not-an-array", list, -1);
     return [];
   }
+  if (list.length === 0)
+    return list;
   const defaultPosition = options.defaultPosition ?? inferDefaultPosition(list);
-  const byId = new Map;
-  for (const entry of list) {
-    const result = sanitizeToast(entry, { defaultPosition });
-    if (!result.ok) {
-      options.onInvalid?.(result.reason, entry);
+  const seen = new Set;
+  let repaired;
+  for (let index = 0;index < list.length; index++) {
+    const entry = list[index];
+    const next = repairToast(entry, index, { ...options, defaultPosition });
+    if (isObject(entry) && hasUsableId(entry)) {
+      if (seen.has(entry.id)) {
+        options.onInvalid?.("duplicate-id", entry, index);
+      }
+      seen.add(entry.id);
+    }
+    if (next === entry)
       continue;
-    }
-    if (byId.has(result.toast.id)) {
-      options.onInvalid?.("duplicate-id", entry);
-      byId.delete(result.toast.id);
-    }
-    byId.set(result.toast.id, result.toast);
+    if (!repaired)
+      repaired = list.slice();
+    repaired[index] = next;
   }
-  return [...byId.values()];
+  return repaired ?? list;
 }
 function normalizeHandlers(handlers) {
   if (!isObject(handlers))
@@ -160,34 +182,25 @@ function createSafeHandlers() {
 function createSafeToastState() {
   return { toasts: [], handlers: createSafeHandlers() };
 }
-function normalizeToastState(state, options = {}) {
+function repairToastState(state, options = {}) {
   if (Array.isArray(state))
     return state;
   if (!isObject(state))
     return createSafeToastState();
-  return {
-    ...state,
-    toasts: sanitizeToasts(state.toasts, options),
-    handlers: normalizeHandlers(state.handlers)
-  };
+  const toasts = repairToasts(state.toasts, options);
+  const handlers = normalizeHandlers(state.handlers);
+  if (toasts === state.toasts && handlers === state.handlers)
+    return state;
+  return { ...state, toasts, handlers };
 }
 function guardToastState(invoke, options = {}) {
-  try {
-    return normalizeToastState(invoke(), options);
-  } catch (error) {
-    try {
-      options.onError?.(error);
-    } catch {}
-    return options.fallback ?? createSafeToastState();
-  }
+  return repairToastState(invoke(), options);
 }
 
 // src/index.ts
 var MAX_DIAGNOSTICS = 20;
 var HOOK_KEYS = ["useToastContainer"];
-var COMPONENT_KEYS = ["ToastContainer"];
 var DISPATCH_KEYS = ["showToast", "addToast", "pushToast", "enqueueToast", "createToast"];
-var isCallableComponent = (value) => typeof value === "function" && !/^class\s/.test(Function.prototype.toString.call(value));
 var src_default = plugin({
   jsonStorage: {
     load: true,
@@ -197,19 +210,16 @@ var src_default = plugin({
     const settings = () => ({ ...DEFAULT_SETTINGS, ...storage.cache });
     let diagnostics = 0;
     let dispatchersPatched = 0;
-    let lastGood;
     let hookPatched = false;
-    let componentPatched = false;
     function diagnose(label, detail) {
       if (!settings().logDiagnostics || diagnostics >= MAX_DIAGNOSTICS)
         return;
       diagnostics++;
       console.warn(`[ToastGuard] ${label}`, detail);
     }
-    function guardOptions() {
+    function repairOptions() {
       return {
-        onInvalid: (reason, entry) => diagnose(`dropped toast (${reason})`, entry),
-        onError: (error) => diagnose("toast container crashed, using safe state", error)
+        onInvalid: (reason, entry, index) => diagnose(`repaired toast (${reason}) at ${index}`, entry)
       };
     }
     function patchHook(module) {
@@ -219,28 +229,7 @@ var src_default = plugin({
       cleanup(instead(module, "useToastContainer", function(args, orig) {
         if (!settings().sanitizeContainer)
           return Reflect.apply(orig, this, args);
-        const state = guardToastState(() => Reflect.apply(orig, this, args), {
-          ...guardOptions(),
-          fallback: lastGood
-        });
-        lastGood = state;
-        return state;
-      }));
-      return true;
-    }
-    function patchComponent(module) {
-      if (!isCallableComponent(module.ToastContainer))
-        return false;
-      componentPatched = true;
-      cleanup(instead(module, "ToastContainer", function(args, orig) {
-        if (!settings().sanitizeContainer)
-          return Reflect.apply(orig, this, args);
-        try {
-          return Reflect.apply(orig, this, args);
-        } catch (error) {
-          diagnose("toast container component threw, rendering nothing", error);
-          return null;
-        }
+        return guardToastState(() => Reflect.apply(orig, this, args), repairOptions());
       }));
       return true;
     }
@@ -271,15 +260,6 @@ var src_default = plugin({
         diagnose("could not patch useToastContainer", error);
       }
     }));
-    cleanup(getModules(withProps(...COMPONENT_KEYS), (module) => {
-      if (hookPatched || componentPatched)
-        return;
-      try {
-        patchComponent(module);
-      } catch (error) {
-        diagnose("could not patch ToastContainer", error);
-      }
-    }));
     for (const key of DISPATCH_KEYS) {
       cleanup(getModules(withProps(key), (module) => {
         try {
@@ -290,9 +270,9 @@ var src_default = plugin({
       }));
     }
     if (settings().logDiagnostics) {
-      console.log(`[ToastGuard] active (hook: ${hookPatched}, component: ${componentPatched}, dispatchers: ${dispatchersPatched})`);
+      console.log(`[ToastGuard] active (hook: ${hookPatched}, dispatchers: ${dispatchersPatched})`);
     }
-    if (!hookPatched && !componentPatched) {
+    if (!hookPatched) {
       console.warn("[ToastGuard] could not find the toast container in this Discord build; nothing was patched");
     }
   },

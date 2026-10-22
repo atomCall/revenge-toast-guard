@@ -3,10 +3,15 @@
 	"version": "1.0.0",
 	"private": true,
 	"type": "module",
+	"description": "Revenge Next plugin that stops the Discord toast container crash",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/atomCall/revenge-toast-guard.git"
+	},
 	"scripts": {
-		"test": "node --test test/toastGuard.test.ts test/plugin.test.ts",
+		"test": "node --test test/toastGuard.test.ts test/plugin.test.ts test/package.test.ts",
 		"typecheck": "tsc --noEmit",
-		"build": "bun build src/index.ts --outfile=dist/index.js --target=browser --format=esm --external '@revenge-mod/*' --external 'react' --external 'react-native' && node scripts/build-manifest.mjs",
+		"build": "bun build src/index.ts --outfile=dist/index.js --target=browser --format=esm --external '@revenge-mod/*' --external 'react' --external 'react-native' && node scripts/build-package.mjs",
 		"check": "bun run typecheck && bun run build && bun run test"
 	},
 	"devDependencies": {

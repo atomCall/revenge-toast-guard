@@ -1,0 +1,30 @@
+{
+	"format": 1,
+	"name": "Toast Guard",
+	"description": "Stops 'Cannot read property position of undefined' crashes coming from Discord's toast container.",
+	"plugins": {
+		"attard.toast-guard": {
+			"name": "Toast Guard",
+			"description": "Stops 'Cannot read property position of undefined' crashes coming from Discord's toast container.",
+			"author": "attard",
+			"channels": {
+				"latest": "1.0.0"
+			},
+			"versions": {
+				"1.0.0": {
+					"url": "https://raw.githubusercontent.com/atomCall/revenge-toast-guard/main/pool/attard.toast-guard@1.0.0.zip",
+					"sha256": "ab067b3b9a0c76185149137ee19e6214415457ac804b1a70fdd1da907c4fed3f",
+					"size": 3182,
+					"dependencies": {
+						"revenge.api": {
+							"version": ">=1 <2"
+						},
+						"discord": {
+							"version": "*"
+						}
+					}
+				}
+			}
+		}
+	}
+}

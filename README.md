@@ -10,21 +10,31 @@ TypeError: Cannot read property 'position' of undefined
 
 ## Install
 
-The built plugin is committed, so the repository works as an install source
-without a build step:
+This repository is a Revenge **plugin repository**: Revenge fetches `index.json`
+(format 1), picks the newest version, downloads the zip it points at, and
+verifies its `sha256` before installing it.
+
+Add this URL as a plugin repository in Revenge:
 
 ```
-manifest.json        plugin metadata; dist.script = dist/index.js (repo-relative)
-dist/manifest.json   same metadata with dist.script = index.js (dist-relative)
-dist/index.js        the bundled plugin
+https://raw.githubusercontent.com/atomCall/revenge-toast-guard/main
 ```
 
-Both manifests are shipped so the repository resolves correctly whether the
-loader reads the manifest from the repository root or from the built folder.
+Then enable **Toast Guard** in the plugin list. Its settings page toggles each
+layer individually; the defaults protect everything.
 
-Point Revenge at `https://github.com/atomCall/revenge-toast-guard` (or add it as
-a custom plugin source) and enable **Toast Guard**. Open its settings page to
-toggle the individual layers; the defaults protect everything.
+Manual install (if your build has no repository support): unzip
+`pool/attard.toast-guard@1.0.0.zip` into
+`/sdcard/Revenge/plugins/attard.toast-guard/` and restart Discord.
+
+What gets published:
+
+```
+index.json                     repository index (format 1), absolute artifact URL + sha256
+pool/<id>@<version>.zip        manifest.json + index.js side by side
+manifest.json                  source metadata (dist.script = dist/index.js)
+dist/index.js                  built script
+```
 
 To rebuild after a change:
 
@@ -82,20 +92,17 @@ bun install
 bun run check     # typecheck + tests + build
 ```
 
-`bun run build` writes the installable folder to `dist/`:
+## Build output
+
+`bun run build` writes `dist/index.js` and the publishable artifacts described
+in [Install](#install):
 
 ```
-dist/
-├── manifest.json
-└── index.js
+dist/index.js
+dist/manifest.json
+pool/<id>@<version>.zip
+index.json
 ```
-
-## Install
-
-1. Copy the `dist/` folder into Revenge's plugins directory, e.g.
-   `/sdcard/Revenge/plugins/toast-guard/`.
-2. Reload Discord (or enable the plugin from Revenge's plugin list).
-3. Open the plugin's settings page to confirm it is active.
 
 ## Diagnosing
 
@@ -140,11 +147,13 @@ node --test test/toastGuard.test.ts test/plugin.test.ts
 ## Project layout
 
 ```
+index.json          repository index consumed by Revenge (generated)
+pool/               one zip per published version (generated, committed)
 src/toastGuard.ts   pure logic (tested)
 src/index.ts        plugin definition, module discovery, patches
 src/settings.tsx    settings UI
 src/config.ts       settings shape + defaults
-scripts/            build helpers (manifest generation)
+scripts/            build helpers (packaging + index.json generation)
 test/toastGuard.test.ts  pure logic suite
 test/plugin.test.ts      bundle-level integration suite
 types/              local Revenge runtime declarations (offline typecheck)

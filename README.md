@@ -14,11 +14,16 @@ This repository is a Revenge **plugin repository**: Revenge fetches `index.json`
 (format 1), picks the newest version, downloads the zip it points at, and
 verifies its `sha256` before installing it.
 
-Add this URL as a plugin repository in Revenge:
+Add one of these as a plugin repository in Revenge (both serve identical bytes):
 
 ```
+https://atomcall.github.io/revenge-toast-guard
 https://raw.githubusercontent.com/atomCall/revenge-toast-guard/main
 ```
+
+> The URL must be a repository root that serves `index.json` — not the
+> `github.com/...` HTML page and not a direct `manifest.json`. Pointing Revenge
+> at a bare manifest is what produces *"failed to fetch manifest"*.
 
 Then enable **Toast Guard** in the plugin list. Its settings page toggles each
 layer individually; the defaults protect everything.

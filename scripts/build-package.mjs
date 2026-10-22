@@ -6,14 +6,24 @@ import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 /**
- * Packages the plugin the way Revenge Next consumes it.
+ * Packages the plugin for both plugin systems that call themselves Revenge.
  *
- * A repository is an `index.json` (format 1) listing every plugin version, plus
- * one zip per version holding `manifest.json` and the built script side by side:
+ * Revenge Next consumes a repository: an `index.json` (format 1) listing every
+ * version, plus one zip per version holding `manifest.json` and the built script.
  *
  *   index.json                          repository index, absolute artifact URLs
  *   pool/<id>@<version>.zip             manifest.json + index.js
  *   dist/manifest.json                  same metadata, script relative to dist/
+ *
+ * Revenge legacy (Vendetta, and the Bunny/Pyon forks) instead fetches
+ * `<repo>/manifest.json` and then `<repo>/<main>`, so the repository root carries
+ * a polymanifest pointing at the legacy bundle:
+ *
+ *   manifest.json                       name/description/authors/main/hash
+ *   dist/legacy.js                      `vendetta => { return <plugin> }` bundle
+ *
+ * `plugin.json` is the single source of truth for the Next metadata; the legacy
+ * manifest is derived from it plus the hash of the built legacy bundle.
  *
  * The artifact URL defaults to this repository's raw GitHub URL; override it
  * with ARTIFACT_BASE_URL when serving the pool from somewhere else (Pages, a CDN).
@@ -22,9 +32,9 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const readJSON = (path) => JSON.parse(readFileSync(join(root, path), 'utf8'))
 const writeJSON = (path, value) => writeFileSync(join(root, path), `${JSON.stringify(value, null, '\t')}\n`)
 
-const manifest = readJSON('manifest.json')
+const next = readJSON('plugin.json')
 const pkg = readJSON('package.json')
-const { id, version } = manifest
+const { id, version } = next
 
 const rawBase = (() => {
 	const url = pkg.repository?.url ?? ''
@@ -36,11 +46,24 @@ const rawBase = (() => {
 const artifactBase = (process.env.ARTIFACT_BASE_URL ?? `${rawBase}/pool`).replace(/\/$/, '')
 
 const script = join(root, 'dist/index.js')
+const legacyScript = join(root, 'dist/legacy.js')
 if (!existsSync(script)) throw new Error('dist/index.js is missing: run `bun build` first')
+if (!existsSync(legacyScript)) throw new Error('dist/legacy.js is missing: run `node scripts/build-legacy.mjs` first')
 
 writeJSON('dist/manifest.json', {
-	...manifest,
-	dist: { ...manifest.dist, script: basename(manifest.dist.script) },
+	...next,
+	dist: { ...next.dist, script: basename(next.dist.script) },
+})
+
+// Revenge legacy reads the manifest straight off the repository root, then
+// resolves `main` relative to it. `hash` only has to change with the bundle.
+writeJSON('manifest.json', {
+	name: next.name,
+	description: next.description,
+	authors: [{ name: next.author }],
+	main: 'dist/legacy.js',
+	hash: createHash('sha256').update(readFileSync(legacyScript)).digest('hex'),
+	vendetta: { icon: 'ShieldIcon' },
 })
 
 const stage = mkdtempSync(join(tmpdir(), 'toast-guard-pkg-'))
@@ -65,24 +88,26 @@ const artifact = {
 	url: `${artifactBase}/${zipName}`,
 	sha256: createHash('sha256').update(readFileSync(zipPath)).digest('hex'),
 	size: statSync(zipPath).size,
-	...(manifest.dependencies ? { dependencies: manifest.dependencies } : {}),
+	...(next.dependencies ? { dependencies: next.dependencies } : {}),
 }
 
 writeJSON('index.json', {
 	format: 1,
-	name: manifest.name,
-	description: manifest.description,
+	name: next.name,
+	description: next.description,
 	plugins: {
 		[id]: {
-			name: manifest.name,
-			description: manifest.description,
-			author: manifest.author,
+			name: next.name,
+			description: next.description,
+			author: next.author,
 			channels: { latest: version },
 			versions: { [version]: artifact },
 		},
 	},
 })
 
-console.log(`dist/manifest.json -> script: ${basename(manifest.dist.script)}`)
+console.log(`manifest.json -> Revenge legacy, main: dist/legacy.js`)
+console.log(`dist/manifest.json -> Revenge Next, script: ${basename(next.dist.script)}`)
 console.log(`pool/${zipName} -> ${artifact.size} bytes, sha256 ${artifact.sha256.slice(0, 12)}...`)
 console.log(`index.json -> ${id}@${version}`)
+

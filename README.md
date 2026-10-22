@@ -1,44 +1,64 @@
 # Toast Guard
 
-A [Revenge](https://revenge-mod.dev) (Revenge **Next**) plugin that stops the
-Discord Android crash:
+A [Revenge](https://revenge-mod.dev) plugin that stops the Discord Android crash:
 
 ```
 TypeError: Cannot read property 'position' of undefined
   at useToastContainer (index.android.bundle)
 ```
 
+It ships both plugin formats, because "Revenge" is currently two different
+plugin systems:
+
+| Build | Who runs it | What it fetches |
+| --- | --- | --- |
+| Revenge **legacy** (Vendetta, and the Bunny/Pyon forks) | the stable app | `<url>/manifest.json`, then `<url>/dist/legacy.js` |
+| Revenge **Next** | the rewrite | a repository root with `index.json` + a zip per version |
+
 ## Install
 
-This repository is a Revenge **plugin repository**: Revenge fetches `index.json`
-(format 1), picks the newest version, downloads the zip it points at, and
-verifies its `sha256` before installing it.
+### Revenge legacy (stable)
 
-Add one of these as a plugin repository in Revenge (both serve identical bytes):
+Settings → **Plugins** → install from URL, using the repository root:
+
+```
+https://raw.githubusercontent.com/atomCall/revenge-toast-guard/main/
+https://atomcall.github.io/revenge-toast-guard/
+```
+
+Revenge appends `manifest.json` to that URL, then resolves `main`
+(`dist/legacy.js`) relative to it. The trailing slash is optional.
+
+> *"Failed to fetch manifest for …"* is this loader's error: `<url>/manifest.json`
+> did not come back as JSON. The `github.com/...` page is HTML, and a URL that
+> already ends in `manifest.json` gets a second `manifest.json` appended.
+
+### Revenge Next
+
+Add one of these as a **plugin repository** (it must serve `index.json`):
 
 ```
 https://atomcall.github.io/revenge-toast-guard
 https://raw.githubusercontent.com/atomCall/revenge-toast-guard/main
 ```
 
-> The URL must be a repository root that serves `index.json` — not the
-> `github.com/...` HTML page and not a direct `manifest.json`. Pointing Revenge
-> at a bare manifest is what produces *"failed to fetch manifest"*.
-
 Then enable **Toast Guard** in the plugin list. Its settings page toggles each
 layer individually; the defaults protect everything.
 
-Manual install (if your build has no repository support): unzip
-`pool/attard.toast-guard@1.0.0.zip` into
-`/sdcard/Revenge/plugins/attard.toast-guard/` and restart Discord.
+Manual install: for Revenge legacy, place `dist/legacy.js` as `index.js` next to
+a copy of `manifest.json` in `/sdcard/Revenge/plugins/attard.toast-guard/`; for
+Revenge Next, unzip `pool/attard.toast-guard@1.0.0.zip` into the same folder.
 
 What gets published:
 
 ```
-index.json                     repository index (format 1), absolute artifact URL + sha256
-pool/<id>@<version>.zip        manifest.json + index.js side by side
-manifest.json                  source metadata (dist.script = dist/index.js)
-dist/index.js                  built script
+manifest.json                  Revenge legacy manifest (authors / main / hash)
+dist/legacy.js                 Revenge legacy bundle, a `vendetta => {…}` expression
+index.json                     Revenge Next repository index (format 1) + sha256
+pool/<id>@<version>.zip        Revenge Next artifact: manifest.json + index.js
+dist/index.js                  Revenge Next bundle
+dist/manifest.json             Revenge Next metadata, script relative to dist/
+plugin.json                    source of truth for the Next metadata
 ```
 
 To rebuild after a change:
@@ -99,15 +119,21 @@ bun run check     # typecheck + tests + build
 
 ## Build output
 
-`bun run build` writes `dist/index.js` and the publishable artifacts described
-in [Install](#install):
+`bun run build` compiles both bundles and regenerates every published artifact
+described in [Install](#install):
 
 ```
-dist/index.js
-dist/manifest.json
+dist/index.js          Revenge Next bundle (ESM, @revenge-mod/* external)
+dist/manifest.json     Revenge Next manifest, script relative to dist/
+dist/legacy.js         Revenge legacy bundle (single expression, nothing imported)
+manifest.json          Revenge legacy manifest, hash of dist/legacy.js
 pool/<id>@<version>.zip
 index.json
 ```
+
+`dist/legacy.js` and `manifest.json` are reproducible: the legacy bundle is
+byte-identical across builds, which is what keeps the committed `hash` (and the
+zip `sha256` in `index.json`) valid after a rebuild.
 
 ## Diagnosing
 
@@ -135,33 +161,49 @@ On start you should see:
 bun run check     # typecheck + build + tests
 ```
 
-Two layers, both runnable without Discord:
+Three layers, all runnable without Discord:
 
 - `test/toastGuard.test.ts` (31 tests) covers the pure logic with Node's built-in
   runner: entry sanitising, position inference, handler repair, state
   normalisation, payload completion, crash containment.
-- `test/plugin.test.ts` (9 tests) builds the plugin and loads the real bundle
-  against stubbed Revenge runtime modules, so it also validates the `plugin()`
-  definition, module discovery by props, the `instead`/`before` hook contract,
-  the settings switches, and unpatching on stop.
+- `test/plugin.test.ts` (9 tests) loads the real Revenge Next bundle against
+  stubbed runtime modules, so it also validates the `plugin()` definition, module
+  discovery by props, the `instead`/`before` hook contract, the settings
+  switches, and unpatching on stop.
+- `test/legacy.test.ts` (4 tests) replays `evalPlugin` from Revenge legacy
+  (`vendetta => { return <bundle> }`) against a stubbed Vendetta API: the plugin
+  object shape, the guarded hook, dispatcher payload completion, unpatching on
+  `onUnload`, and the settings switches.
+- `test/package.test.ts` (5 tests) checks the published artifacts: `index.json`
+  against the zip's real `sha256`/size, the zip contents, the legacy manifest
+  against `dist/legacy.js`, and that the legacy bundle is one expression (a
+  leading comment would make the loader's `return` hit ASI and hand back
+  `undefined`).
 
 ```bash
-node --test test/toastGuard.test.ts test/plugin.test.ts
+node --test test/toastGuard.test.ts test/plugin.test.ts test/legacy.test.ts test/package.test.ts
 ```
 
 ## Project layout
 
 ```
-index.json          repository index consumed by Revenge (generated)
+plugin.json         Revenge Next metadata (id, version, dependencies) — source of truth
+manifest.json       Revenge legacy manifest (generated, committed)
+index.json          Revenge Next repository index (generated, committed)
 pool/               one zip per published version (generated, committed)
+dist/index.js       Revenge Next bundle (generated, committed)
+dist/legacy.js      Revenge legacy bundle (generated, committed)
 src/toastGuard.ts   pure logic (tested)
-src/index.ts        plugin definition, module discovery, patches
-src/settings.tsx    settings UI
 src/config.ts       settings shape + defaults
-scripts/            build helpers (packaging + index.json generation)
-test/toastGuard.test.ts  pure logic suite
-test/plugin.test.ts      bundle-level integration suite
-types/              local Revenge runtime declarations (offline typecheck)
+src/index.ts        Next: plugin definition, module discovery, patches
+src/settings.tsx    Next: settings UI
+src/legacy/index.ts legacy: the same layers on the Vendetta API
+src/legacy/settings.ts  legacy: settings UI built from `Forms`
+src/legacy/types.ts     the slice of the Vendetta API the plugin uses
+scripts/build-legacy.mjs   wraps the legacy CJS build into one expression
+scripts/build-package.mjs  writes manifest.json, dist/manifest.json, zip, index.json
+test/                      see [Tests](#tests)
+types/              local Revenge Next runtime declarations (offline typecheck)
 ```
 
 ## Known limitations

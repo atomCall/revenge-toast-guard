@@ -1,15 +1,14 @@
 {
-	"format": 1,
-	"id": "attard.toast-guard",
 	"name": "Toast Guard",
 	"description": "Stops 'Cannot read property position of undefined' crashes coming from Discord's toast container.",
-	"author": "attard",
-	"version": "1.0.0",
-	"dependencies": {
-		"revenge.api": { "version": ">=1 <2" },
-		"discord": { "version": "*" }
-	},
-	"dist": {
-		"script": "dist/index.js"
+	"authors": [
+		{
+			"name": "attard"
+		}
+	],
+	"main": "dist/legacy.js",
+	"hash": "31c891dba446f392dff8108ac495584338c1f7fb620e4653a926c3d1d1f45839",
+	"vendetta": {
+		"icon": "ShieldIcon"
 	}
 }

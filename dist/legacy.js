@@ -54,6 +54,114 @@ var DEFAULT_SETTINGS = {
   logDiagnostics: true
 };
 
+// src/diagnostics.ts
+var MAX_DEPTH = 2;
+var MAX_ENTRIES = 3;
+var MAX_KEYS = 24;
+var MAX_LENGTH = 400;
+var MAX_STRING = 32;
+var isPlainObject = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+var clamp = (text) => text.length > MAX_LENGTH ? `${text.slice(0, MAX_LENGTH)}…` : text;
+function describeString(value) {
+  const oneLine = value.replace(/\s+/g, " ");
+  return oneLine.length > MAX_STRING ? `"${oneLine.slice(0, MAX_STRING)}…"` : `"${oneLine}"`;
+}
+function describeArray(value, depth, seen) {
+  const parts = [];
+  for (let index = 0;index < value.length && parts.length < MAX_ENTRIES; index++) {
+    parts.push(index in value ? describeValue(value[index], depth + 1, seen) : "<hole>");
+  }
+  if (value.length > MAX_ENTRIES)
+    parts.push("…");
+  return `array(${value.length})[${parts.join(",")}]`;
+}
+function describeObject(value, depth, seen) {
+  if (seen.has(value))
+    return "<cycle>";
+  if (depth > MAX_DEPTH)
+    return "{…}";
+  seen.add(value);
+  const parts = [];
+  const keys = Object.keys(value);
+  for (const key of keys.slice(0, MAX_KEYS)) {
+    parts.push(`${key}:${describeValue(value[key], depth + 1, seen)}`);
+  }
+  if (keys.length > MAX_KEYS)
+    parts.push(`…+${keys.length - MAX_KEYS}`);
+  seen.delete(value);
+  return `{${parts.join(",")}}`;
+}
+function describeValue(value, depth = 0, seen = new Set) {
+  if (value === undefined)
+    return "undefined";
+  if (value === null)
+    return "null";
+  const kind = typeof value;
+  if (kind === "string")
+    return describeString(value);
+  if (kind === "number" || kind === "boolean" || kind === "bigint")
+    return String(value);
+  if (kind === "function") {
+    const name = value.name;
+    return name ? `fn:${name}` : "fn";
+  }
+  if (kind === "symbol")
+    return "symbol";
+  if (Array.isArray(value))
+    return describeArray(value, depth, seen);
+  if (depth > MAX_DEPTH)
+    return "{…}";
+  return describeObject(value, depth, seen);
+}
+function describeModule(module2) {
+  if (!isPlainObject(module2) && typeof module2 !== "object")
+    return describeValue(module2);
+  if (module2 === null)
+    return "null";
+  const keys = Object.keys(module2);
+  const parts = keys.slice(0, MAX_KEYS).map((key) => `${key}:${describeValue(module2[key], MAX_DEPTH - 1)}`);
+  if (keys.length > MAX_KEYS)
+    parts.push(`…+${keys.length - MAX_KEYS}`);
+  return clamp(`{${parts.join(",")}}`);
+}
+function findComponentExports(module2, name) {
+  if (!isPlainObject(module2))
+    return [];
+  return Object.keys(module2).filter((key) => {
+    const value = module2[key];
+    return typeof value === "function" && value.name === name;
+  });
+}
+function createInspector(log, maxShapes = 10) {
+  const seen = new Set;
+  let last = "unknown";
+  let shapes = 0;
+  return {
+    get last() {
+      return last;
+    },
+    get shapes() {
+      return shapes;
+    },
+    observe(state, render) {
+      if (shapes >= maxShapes)
+        return;
+      let description;
+      try {
+        description = describeValue(state);
+      } catch {
+        return;
+      }
+      last = description;
+      if (seen.has(description))
+        return;
+      seen.add(description);
+      shapes++;
+      log(`hook result #${shapes} (render ${render}): ${description}`);
+    }
+  };
+}
+
 // src/toastGuard.ts
 var DEFAULT_POSITION = "bottom";
 var placeholders = new Map;
@@ -217,8 +325,10 @@ function createSettings(api, storage) {
 
 // src/legacy/index.ts
 var MAX_DIAGNOSTICS = 20;
+var MAX_INSPECTION = 12;
 var RETRY_INTERVAL = 1000;
 var MAX_SCANS = 15;
+var COMPONENT_NAME = "ToastContainer";
 var HOOK_KEYS = ["useToastContainer"];
 var DISPATCH_KEYS = ["showToast", "addToast", "pushToast", "enqueueToast", "createToast"];
 function ToastGuard() {
@@ -226,6 +336,8 @@ function ToastGuard() {
   const storage = api.plugin?.storage ?? {};
   const settings = () => ({ ...DEFAULT_SETTINGS, ...storage });
   let diagnostics = 0;
+  let inspected = 0;
+  let renders = 0;
   let dispatchersPatched = 0;
   let hookPatched = false;
   let scans = 0;
@@ -239,19 +351,64 @@ function ToastGuard() {
     diagnostics++;
     console.warn(`[ToastGuard] ${label}`, detail);
   }
+  function inspect(line) {
+    if (!settings().logDiagnostics || inspected >= MAX_INSPECTION)
+      return;
+    inspected++;
+    console.warn(`[ToastGuard] ${line}`);
+  }
+  const inspector = createInspector(inspect);
+  function describeError(error) {
+    if (error instanceof Error)
+      return `${error.name}: ${error.message}`;
+    return String(error);
+  }
   function repairOptions() {
     return {
       onInvalid: (reason, entry, index) => diagnose(`repaired toast (${reason}) at ${index}`, entry)
     };
   }
+  function patchComponent(module2, key) {
+    const component = module2[key];
+    if (typeof component !== "function")
+      return;
+    if (component.prototype?.isReactComponent)
+      return;
+    unpatch.push(api.patcher.instead(key, module2, function(args, original) {
+      try {
+        return Reflect.apply(original, this, args);
+      } catch (error) {
+        try {
+          inspect(`${COMPONENT_NAME} threw on render ${renders} with props ${describeValue(args?.[0])}; last hook result: ${inspector.last}`);
+        } catch {}
+        throw error;
+      }
+    }));
+    inspect(`instrumented ${key} as ${COMPONENT_NAME}`);
+  }
   function patchHook(module2) {
     if (typeof module2.useToastContainer !== "function")
       return false;
     hookPatched = true;
+    inspect(`hook module exports: ${describeModule(module2)}`);
+    for (const key of findComponentExports(module2, COMPONENT_NAME))
+      patchComponent(module2, key);
     unpatch.push(api.patcher.instead("useToastContainer", module2, function(args, original) {
       if (!settings().sanitizeContainer)
         return Reflect.apply(original, this, args);
-      return guardToastState(() => Reflect.apply(original, this, args), repairOptions());
+      renders++;
+      let raw;
+      const state = guardToastState(() => {
+        try {
+          raw = Reflect.apply(original, this, args);
+          return raw;
+        } catch (error) {
+          inspect(`useToastContainer threw on render ${renders}: ${describeError(error)}`);
+          throw error;
+        }
+      }, repairOptions());
+      inspector.observe(raw, renders);
+      return state;
     }));
     return true;
   }

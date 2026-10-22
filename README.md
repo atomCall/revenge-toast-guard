@@ -115,6 +115,29 @@ Discord updates that renumber modules.
 | Fix toasts at the source | on | Layer 1 |
 | Log repaired toasts | on | Writes to the React Native log (capped at 20 lines) |
 
+## Reading the log
+
+The container of a given Discord build is Hermes bytecode, so the plugin asks it
+what it returns instead of assuming the shape. With **Log repaired toasts** on:
+
+```
+[ToastGuard] active (hook: true, dispatchers: 3)
+[ToastGuard] hook module exports: {default:fn:ToastContainer,useToastContainer:fn,ToastStore:{}}
+[ToastGuard] hook result #1 (render 1): {toasts:undefined,handlers:{…}}
+[ToastGuard] instrumented default as ToastContainer
+[ToastGuard] hook result #2 (render 7): {toasts:array(1)[{id:"a",position:"top",…}],handlers:{…}}
+```
+
+- `hook result #n` is printed once per **distinct shape**, never once per render,
+  and describes what Discord handed over *before* the repair. `undefined` and
+  `<hole>` entries, which are exactly what the container chokes on, are spelled
+  out.
+- `instrumented … as ToastContainer` means the component that renders the
+  container is wrapped too, so a crash can be attributed to the state it had:
+  `[ToastGuard] ToastContainer threw on render N with props {…}; last hook result: …`
+- Shape reporting has its own small budget (12 lines) and never replaces,
+  swallows or alters an error.
+
 ## Build
 
 ```bash

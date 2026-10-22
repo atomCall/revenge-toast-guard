@@ -1,4 +1,5 @@
 import { DEFAULT_SETTINGS, type Settings } from '../config'
+import { createInspector, describeModule, describeValue, findComponentExports } from '../diagnostics'
 import { ensurePosition, guardToastState } from '../toastGuard'
 import createSettings from './settings'
 import type { AnyFunction, LegacyApi, LegacyModule, LegacyPlugin } from './types'
@@ -17,8 +18,11 @@ import type { AnyFunction, LegacyApi, LegacyModule, LegacyPlugin } from './types
 declare const vendetta: LegacyApi
 
 const MAX_DIAGNOSTICS = 20
+const MAX_INSPECTION = 12
 const RETRY_INTERVAL = 1_000
 const MAX_SCANS = 15
+
+const COMPONENT_NAME = 'ToastContainer'
 
 const HOOK_KEYS = ['useToastContainer'] as const
 const DISPATCH_KEYS = ['showToast', 'addToast', 'pushToast', 'enqueueToast', 'createToast'] as const
@@ -33,6 +37,8 @@ export default function ToastGuard(): LegacyPlugin {
 	const settings = (): Settings => ({ ...DEFAULT_SETTINGS, ...storage })
 
 	let diagnostics = 0
+	let inspected = 0
+	let renders = 0
 	let dispatchersPatched = 0
 	let hookPatched = false
 	let scans = 0
@@ -48,6 +54,23 @@ export default function ToastGuard(): LegacyPlugin {
 		console.warn(`[ToastGuard] ${label}`, detail)
 	}
 
+	/**
+	 * Shape reports have their own, smaller budget: they are worth a lot once and
+	 * nothing at all afterwards, and they must not eat the repair log's budget.
+	 */
+	function inspect(line: string): void {
+		if (!settings().logDiagnostics || inspected >= MAX_INSPECTION) return
+		inspected++
+		console.warn(`[ToastGuard] ${line}`)
+	}
+
+	const inspector = createInspector(inspect)
+
+	function describeError(error: unknown): string {
+		if (error instanceof Error) return `${error.name}: ${error.message}`
+		return String(error)
+	}
+
 	function repairOptions() {
 		return {
 			// No explicit default: a missing position inherits its sibling's,
@@ -57,10 +80,46 @@ export default function ToastGuard(): LegacyPlugin {
 		}
 	}
 
+	function patchComponent(module: LegacyModule, key: string): void {
+		const component = module[key]
+		if (typeof component !== 'function') return
+
+		// A class component would break: React calls it with `new`, and a plain
+		// wrapper cannot forward that without losing the prototype.
+		if ((component as { prototype?: { isReactComponent?: unknown } }).prototype?.isReactComponent) return
+
+		unpatch.push(
+			api.patcher.instead(key, module, function (this: unknown, args: any[], original: AnyFunction) {
+				try {
+					return Reflect.apply(original, this, args)
+				} catch (error) {
+					// The interesting question is not *that* it threw, which the
+					// logcat already answers, but what state it threw on.
+					try {
+						inspect(
+							`${COMPONENT_NAME} threw on render ${renders} with props ${describeValue(args?.[0])}; last hook result: ${inspector.last}`,
+						)
+					} catch {
+						// Never let a diagnostics bug replace the real error
+					}
+					throw error
+				}
+			}),
+		)
+
+		inspect(`instrumented ${key} as ${COMPONENT_NAME}`)
+	}
+
 	function patchHook(module: LegacyModule): boolean {
 		if (typeof module.useToastContainer !== 'function') return false
 
 		hookPatched = true
+
+		// Sibling exports name the rest of the toast subsystem, and the component
+		// that crashes is the one Hermes calls `ToastContainer`.
+		inspect(`hook module exports: ${describeModule(module)}`)
+		for (const key of findComponentExports(module, COMPONENT_NAME)) patchComponent(module, key)
+
 		unpatch.push(
 			api.patcher.instead(
 				'useToastContainer',
@@ -68,10 +127,26 @@ export default function ToastGuard(): LegacyPlugin {
 				function (this: unknown, args: any[], original: AnyFunction) {
 					if (!settings().sanitizeContainer) return Reflect.apply(original, this, args)
 
+					renders++
+
 					// The original hook is called straight through: swallowing an
 					// exception raised inside it would desync React's hook list and
 					// crash the next render with `areHookInputsEqual`.
-					return guardToastState(() => Reflect.apply(original, this, args), repairOptions())
+					let raw: unknown
+					const state = guardToastState(() => {
+						try {
+							raw = Reflect.apply(original, this, args)
+							return raw
+						} catch (error) {
+							inspect(`useToastContainer threw on render ${renders}: ${describeError(error)}`)
+							throw error
+						}
+					}, repairOptions())
+
+					// Log what Discord handed over, not what was handed back: the
+					// original shape is what names the fields to repair.
+					inspector.observe(raw, renders)
+					return state
 				},
 			),
 		)

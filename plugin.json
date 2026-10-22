@@ -4,7 +4,7 @@
 	"name": "Toast Guard",
 	"description": "Stops 'Cannot read property position of undefined' crashes coming from Discord's toast container.",
 	"author": "Andrei",
-	"version": "1.0.0",
+	"version": "1.1.0",
 	"dependencies": {
 		"revenge.api": { "version": ">=1 <2" },
 		"discord": { "version": "*" }

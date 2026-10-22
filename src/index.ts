@@ -2,6 +2,7 @@ import { getModules } from '@revenge-mod/modules/finders'
 import { withProps } from '@revenge-mod/modules/finders/filters'
 import { before, instead } from '@revenge-mod/patcher'
 import { DEFAULT_SETTINGS, type Settings } from './config'
+import { createInspector, describeModule, describeValue, findComponentExports } from './diagnostics'
 import SettingsComponent from './settings'
 import { ensurePosition, guardToastState } from './toastGuard'
 
@@ -9,6 +10,9 @@ type AnyRecord = Record<string, any>
 type AnyFunction = (...args: any[]) => any
 
 const MAX_DIAGNOSTICS = 20
+const MAX_INSPECTION = 12
+
+const COMPONENT_NAME = 'ToastContainer'
 
 const HOOK_KEYS = ['useToastContainer'] as const
 const DISPATCH_KEYS = ['showToast', 'addToast', 'pushToast', 'enqueueToast', 'createToast'] as const
@@ -24,6 +28,8 @@ export default plugin<{ jsonStorage: Settings }>({
 		const settings = (): Settings => ({ ...DEFAULT_SETTINGS, ...storage.cache })
 
 		let diagnostics = 0
+		let inspected = 0
+		let renders = 0
 		let dispatchersPatched = 0
 		let hookPatched = false
 
@@ -31,6 +37,20 @@ export default plugin<{ jsonStorage: Settings }>({
 			if (!settings().logDiagnostics || diagnostics >= MAX_DIAGNOSTICS) return
 			diagnostics++
 			console.warn(`[ToastGuard] ${label}`, detail)
+		}
+
+		/** Shape reports have their own budget; see the legacy build for why. */
+		function inspect(line: string): void {
+			if (!settings().logDiagnostics || inspected >= MAX_INSPECTION) return
+			inspected++
+			console.warn(`[ToastGuard] ${line}`)
+		}
+
+		const inspector = createInspector(inspect)
+
+		function describeError(error: unknown): string {
+			if (error instanceof Error) return `${error.name}: ${error.message}`
+			return String(error)
 		}
 
 		function repairOptions() {
@@ -42,18 +62,63 @@ export default plugin<{ jsonStorage: Settings }>({
 			}
 		}
 
+		function patchComponent(module: AnyRecord, key: string): void {
+			const component = module[key]
+			if (typeof component !== 'function') return
+			if (component.prototype?.isReactComponent) return
+
+			cleanup(
+				instead(module, key, function (this: unknown, args: any[], orig: AnyFunction) {
+					try {
+						return Reflect.apply(orig, this, args)
+					} catch (error) {
+						try {
+							inspect(
+								`${COMPONENT_NAME} threw on render ${renders} with props ${describeValue(args?.[0])}; last hook result: ${inspector.last}`,
+							)
+						} catch {
+							// Never let a diagnostics bug replace the real error
+						}
+						throw error
+					}
+				}),
+			)
+
+			inspect(`instrumented ${key} as ${COMPONENT_NAME}`)
+		}
+
 		function patchHook(module: AnyRecord): boolean {
 			if (typeof module.useToastContainer !== 'function') return false
 
 			hookPatched = true
+
+			inspect(`hook module exports: ${describeModule(module)}`)
+			for (const key of findComponentExports(module, COMPONENT_NAME)) patchComponent(module, key)
+
 			cleanup(
 				instead(module, 'useToastContainer', function (this: unknown, args: any[], orig: AnyFunction) {
 					if (!settings().sanitizeContainer) return Reflect.apply(orig, this, args)
 
+					renders++
+
 					// The original hook is called straight through: swallowing an
 					// exception raised inside it would desync React's hook list and
 					// crash the next render with `areHookInputsEqual`.
-					return guardToastState(() => Reflect.apply(orig, this, args), repairOptions())
+					let raw: unknown
+					const state = guardToastState(() => {
+						try {
+							raw = Reflect.apply(orig, this, args)
+							return raw
+						} catch (error) {
+							inspect(`useToastContainer threw on render ${renders}: ${describeError(error)}`)
+							throw error
+						}
+					}, repairOptions())
+
+					// Log what Discord handed over, not what was handed back: the
+					// original shape is what names the fields to repair.
+					inspector.observe(raw, renders)
+					return state
 				}),
 			)
 

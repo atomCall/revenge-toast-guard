@@ -38,7 +38,9 @@ test('index.json describes this plugin', () => {
 
 test('index.json points at the committed artifact with a matching hash', () => {
 	const bytes = readFileSync(zipPath)
-	assert.match(entry.url, /^https:\/\/\S+\/pool\/attard\.toast-guard@1\.0\.0\.zip$/)
+	// Built from the version rather than written out, so a bump cannot fail here.
+	assert.match(entry.url, /^https:\/\/\S+$/)
+	assert.ok(entry.url.endsWith(`/pool/${artifact}`), `unexpected artifact url: ${entry.url}`)
 	assert.equal(entry.size, statSync(zipPath).size)
 	assert.equal(entry.size, bytes.length)
 	assert.equal(entry.sha256, createHash('sha256').update(bytes).digest('hex'))

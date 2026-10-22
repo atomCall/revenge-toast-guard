@@ -25,7 +25,7 @@ const load = new Function('vendetta', `return ${source}`) as (api: unknown) => a
 type AnyRecord = Record<string, any>
 type AnyFunction = (...args: any[]) => any
 
-function createRuntime() {
+function createRuntime(options: { component?: AnyFunction } = {}) {
 	const delivered: AnyRecord[] = []
 	const storage: AnyRecord = {}
 
@@ -39,6 +39,7 @@ function createRuntime() {
 	const toastModule: AnyRecord = {
 		useToastContainer: () => current,
 	}
+	if (options.component) toastModule.default = options.component
 
 	const dispatcher: AnyRecord = {
 		showToast(payload: AnyRecord) {
@@ -104,8 +105,8 @@ function createRuntime() {
 	}
 }
 
-function start() {
-	const runtime = createRuntime()
+function start(options: { component?: AnyFunction } = {}) {
+	const runtime = createRuntime(options)
 	const factory = load(runtime.api)
 	assert.equal(typeof factory, 'function', 'the bundle must evaluate to a factory')
 
@@ -114,6 +115,21 @@ function start() {
 
 	plugin.onLoad()
 	return { ...runtime, plugin }
+}
+
+/** Collects what the plugin writes to the React Native log. */
+function captureWarnings(run: () => void): string[] {
+	const lines: string[] = []
+	const original = console.warn
+	console.warn = (...args: unknown[]) => {
+		lines.push(args.map(arg => (typeof arg === 'string' ? arg : String(arg))).join(' '))
+	}
+	try {
+		run()
+	} finally {
+		console.warn = original
+	}
+	return lines
 }
 
 test('the container hook never hands a malformed toast to the renderer', () => {
@@ -189,3 +205,47 @@ test('the settings component toggles the stored settings', () => {
 	assert.equal(storage.sanitizeContainer, false)
 	assert.equal(toastModule.useToastContainer(), toastState)
 })
+
+test('the guard reports the shape of the state Discord handed over', () => {
+	const lines = captureWarnings(() => {
+		const { toastModule } = start()
+		// Repeated renders of the same shape must not repeat the line
+		toastModule.useToastContainer()
+		toastModule.useToastContainer()
+	})
+
+	const shapes = lines.filter(line => line.startsWith('[ToastGuard] hook result'))
+	assert.equal(shapes.length, 1)
+	assert.equal(
+		shapes[0],
+		'[ToastGuard] hook result #1 (render 1): ' +
+			'{toasts:array(3)[null,{id:"a",position:"bottom"},{id:"b"}],handlers:{}}',
+	)
+	assert.ok(
+		lines.some(line => line.startsWith('[ToastGuard] hook module exports: ')),
+		'the exports of the module that owns the hook name the rest of the subsystem',
+	)
+})
+
+test('a crashing container logs the state it crashed on and still throws', () => {
+	const crashing = function ToastContainer(): unknown {
+		throw new TypeError("Cannot read property 'position' of undefined")
+	}
+
+	let instrumented = false
+	const lines = captureWarnings(() => {
+		const { toastModule } = start({ component: crashing })
+		instrumented = toastModule.default !== crashing
+		toastModule.useToastContainer()
+
+		assert.throws(() => toastModule.default({}), /position/)
+		// The container's own error must not be replaced by the diagnostic one
+		assert.throws(() => toastModule.default({}), TypeError)
+	})
+
+	assert.ok(instrumented, 'the component shipped next to the hook is instrumented')
+	const crash = lines.find(line => line.includes('ToastContainer threw on render'))
+	assert.ok(crash, 'the crash is logged')
+	assert.match(crash, /last hook result: \{toasts:array\(3\)/)
+})
+

@@ -1,0 +1,17 @@
+{
+	"name": "revenge-toast-guard",
+	"version": "1.0.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"test": "node --test test/toastGuard.test.ts test/plugin.test.ts",
+		"typecheck": "tsc --noEmit",
+		"build": "bun build src/index.ts --outfile=dist/index.js --target=browser --format=esm --external '@revenge-mod/*' --external 'react' --external 'react-native' && cp manifest.json dist/manifest.json",
+		"check": "bun run typecheck && bun run build && bun run test"
+	},
+	"devDependencies": {
+		"@types/node": "^26.6.5",
+		"@types/react": "^19.3.0",
+		"typescript": "5.9.3"
+	}
+}

@@ -1,0 +1,11 @@
+{
+	"format": 1,
+	"id": "toast-guard",
+	"name": "Toast Guard",
+	"description": "Stops 'Cannot read property position of undefined' crashes coming from Discord's toast container.",
+	"author": "attard",
+	"version": "1.0.0",
+	"dist": {
+		"script": "index.js"
+	}
+}
